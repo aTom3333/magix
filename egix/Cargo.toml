@@ -1,0 +1,24 @@
+[package]
+name = "egix_module"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Emacs dynamic module using gitoxide to accelerate Magit operations"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+name = "egix_module"
+
+[dependencies]
+emacs = "0.19"
+gix = "0.63"
+gix-status = "0.10"
+anyhow = "1.0"
+thiserror = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

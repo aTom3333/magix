@@ -1,0 +1,202 @@
+;;; magix.el --- Gitoxide-powered Magit acceleration -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026
+
+;; Author: Thomas Ferrand
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "30.1") (magit "4.5") (egix "0.1.0"))
+;; Keywords: git, magit, performance
+;; URL: https://github.com/aTom3333/magix
+
+;;; Commentary:
+
+;;; Code:
+
+;; add egix subfoler to load-path so egix can be loaded
+(add-to-list 'load-path 
+  (expand-file-name "egix" (file-name-directory (or load-file-name buffer-file-name))))
+
+(require 'magit)
+(require 'egix)
+
+(defgroup magix nil
+  "Gitoxide-powered Magit acceleration."
+  :group 'magit
+  :prefix "magix-")
+
+(defcustom magix-debug-mode nil
+  "When non-nil, compare results from gitoxide and original Magit functions.
+If results differ, a warning is logged to the *magix-debug* buffer."
+  :type 'boolean
+  :group 'magix)
+
+(defcustom magix-excluded-repositories nil
+  "List of repository roots where magix acceleration should be disabled.
+Each entry should be an absolute path to a repository root directory."
+  :type '(repeat directory)
+  :group 'magix)
+
+(defvar magix--advised-functions nil
+  "List of functions that have been successfully advised.")
+
+(defun magix--normalize-toplevel-path (path)
+  "Normalize PATH for git toplevel comparisons.
+Ensure the drive letter is uppercase and resolve to a true path." 
+  ;; Supposedly this shouldn't be needed to get correct behavior
+  ;; but it is there to get exact same paths when comparing implementations
+  (let ((normalized (directory-file-name (file-truename (expand-file-name path)))))
+    (if (string-match "^[a-zA-Z]:" normalized)
+        (concat (upcase (substring normalized 0 1)) (substring normalized 1))
+      normalized)))
+
+(defun magix--check-function-signature (func-symbol expected-args)
+  "Check if FUNC-SYMBOL exists and has compatible signature with EXPECTED-ARGS.
+Returns t if compatible, nil otherwise."
+  (when (fboundp func-symbol)
+    (condition-case nil
+        (let* ((args (help-function-arglist func-symbol))
+               (required (seq-take-while (lambda (arg) 
+                                          (not (memq arg '(&optional &rest)))) 
+                                        args))
+               (expected-required (seq-take-while (lambda (arg)
+                                                   (not (memq arg '(&optional &rest))))
+                                                 expected-args)))
+          ;; Check that required args count matches
+          (= (length required) (length expected-required)))
+      (error nil))))
+
+(defun magix--log-mismatch (func-name args magix-result original-result)
+  "Log a mismatch between MAGIX-RESULT and ORIGINAL-RESULT for FUNC-NAME with ARGS."
+  (with-current-buffer (get-buffer-create "*magix-debug*")
+    (goto-char (point-max))
+    (insert (format "\n=== MISMATCH DETECTED ===\n"))
+    (insert (format "Function: %s\n" func-name))
+    (insert (format "Time: %s\n" (current-time-string)))
+    (insert (format "Directory: %s\n" default-directory))
+    (insert (format "Args: %S\n" args))
+    (insert (format "Magix result: %S\n" magix-result))
+    (insert (format "Original result: %S\n" original-result))
+    (insert (format "========================\n\n")))
+  (message "Magix: Mismatch detected in %s - see *magix-debug* buffer" func-name))
+
+(defmacro magix--advise-override-helper (func-name args orig-func orig-args &rest body)
+  "Helper to implement a function that overrides a magit function.
+Will run BODY is the repo should be accelerated (see magix--should-accelerate-p).
+If magix-debug-mode in non-nil, will additionnaly run the original function
+and compare the results.
+FUNC-NAME is the symbol of the function for logging.
+ARGS is a plist of arguments for logging.
+ORIG-FUNC is the original function symbol.
+ORIG-ARGS is a list of arguments to pass to the original function.
+BODY should evaluate to the magix result.
+Automatically checks if acceleration should be enabled via `magix--should-accelerate-p'."
+  (declare (indent 4))
+  `(if (magix--should-accelerate-p)
+       (let ((magix-result (progn ,@body)))
+         (if magix-debug-mode
+             (let ((original-result (condition-case nil
+                                        (apply ,orig-func ,orig-args)
+                                      (error nil))))
+               (unless (equal magix-result original-result)
+                 (magix--log-mismatch ',func-name ,args magix-result original-result))
+               original-result)
+           magix-result))
+     (apply ,orig-func ,orig-args)))
+
+(defun magix--should-accelerate-p ()
+  "Return non-nil if magix acceleration should be active in current context.
+Checks if current directory is in an excluded repository or accessed via TRAMP."
+  (and magix-mode
+       ;; Don't accelerate for remote (TRAMP) repositories
+       (not (file-remote-p default-directory))
+       ;; Don't accelerate for excluded repositories
+       (not (seq-some (lambda (excluded-repo)
+                       (string-prefix-p (expand-file-name excluded-repo)
+                                      (expand-file-name default-directory)))
+                     magix-excluded-repositories))))
+
+(defun magix--git-string-dispatch (args)
+  "Return a git-string result for ARGS using egix, or nil if not handled."
+  (pcase args
+    (`("rev-parse" "--show-toplevel" . ,_)
+     (condition-case nil
+       (let* ((repo (egix-repo-discover default-directory))
+          (root (egix-repo-workdir repo)))
+           (magix--normalize-toplevel-path root))
+       (error nil)))
+    (`("rev-parse" "--is-inside-work-tree" . ,_)
+     (if (condition-case nil
+             (progn
+               (egix-repo-discover default-directory)
+               t)
+           (error nil))
+         "true"
+       "false"))
+    (`("rev-parse" "--abbrev-ref" "HEAD" . ,_)
+     (condition-case nil
+         (let ((repo (egix-repo-discover default-directory)))
+           (egix-repo-current-branch repo))
+       (error nil)))
+    (`("symbolic-ref" "--short" "HEAD" . ,_)
+     (condition-case nil
+         (let ((repo (egix-repo-discover default-directory)))
+           (egix-repo-current-branch repo))
+       (error nil)))
+    (_ nil)))
+
+(defun magix-magit-git-string (orig-func &rest args)
+  "Intercept `magit-git-string' to serve common queries via egix.
+ORIG-FUNC is the original `magit-git-string' function.
+ARGS are the git arguments passed to `magit-git-string'."
+  (magix--advise-override-helper magit-git-string (list :args args) orig-func args
+    (or (magix--git-string-dispatch args)
+        (apply orig-func args))))
+
+(defun magix-magit-git-str (orig-func &rest args)
+  "Intercept `magit-git-str' to serve common queries via egix.
+ORIG-FUNC is the original `magit-git-str' function.
+ARGS are the git arguments passed to `magit-git-str'."
+  (let ((flat-args (flatten-tree args)))
+    (magix--advise-override-helper magit-git-str (list :args flat-args) orig-func args
+      (or (magix--git-string-dispatch flat-args)
+          (apply orig-func args)))))
+
+
+(define-minor-mode magix-mode
+  "Toggle gitoxide-powered Magit acceleration.
+
+When enabled, certain Magit operations will use the faster
+gitoxide implementation instead of calling Git CLI commands."
+  :global t
+  :group 'magix
+  :lighter " Magix"
+  (if magix-mode
+      (progn
+        ;; Ensure egix is loaded
+        (unless (featurep 'egix-module)
+          (egix-load-module))
+        
+        ;; Add around advice to Magit functions with signature checking
+        (setq magix--advised-functions nil)
+        
+        (when (magix--check-function-signature 'magit-git-string '(&rest args))
+          (advice-add 'magit-git-string :around #'magix-magit-git-string)
+          (push 'magit-git-string magix--advised-functions))
+
+        (when (magix--check-function-signature 'magit-git-str '(&rest args))
+          (advice-add 'magit-git-str :around #'magix-magit-git-str)
+          (push 'magit-git-str magix--advised-functions))
+        
+        (if magix--advised-functions
+            (message "Magix acceleration enabled (%d functions advised)"
+                     (length magix--advised-functions))
+          (message "Magix: Warning - No compatible Magit functions found. Your Magit version may be incompatible.")))
+    ;; Remove advice from all advised functions
+    (dolist (func magix--advised-functions)
+      (advice-remove func (intern (format "magix-%s" func))))
+    (setq magix--advised-functions nil)
+    (message "Magix acceleration disabled")))
+
+(provide 'magix)
+
+;;; magix.el ends here

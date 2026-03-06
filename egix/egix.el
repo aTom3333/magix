@@ -38,35 +38,70 @@
   (expand-file-name "target/release" egix--root)
   "Directory where the egix native module is built.")
 
+(defvar egix--build-process nil
+  "Current egix cargo build process.")
+
 (defun egix--module-filename ()
   (expand-file-name egix--module-name egix--module-directory))
+
+(defun egix--build-in-progress-p ()
+  "Returns t if a build of egix-module is in progress"
+  (process-live-p egix--build-process))
+
+(defun egix--start-build ()
+  "Start the egix cargo build process."
+  (require 'ansi-color)
+  (let* ((default-directory egix--root)
+         (display-buffer-alist
+          '(("\\*egix-module-build\\*" . (display-buffer-no-window))))
+         (buf (compilation-start
+               "cargo build --release --color=always"
+               nil
+               (lambda (_) "*egix-module-build*"))))
+
+    (setq egix--build-process (get-buffer-process buf))
+
+    (with-current-buffer buf
+      (add-hook 'compilation-filter-hook
+                #'ansi-color-compilation-filter
+                nil t)
+      (add-hook 'compilation-finish-functions
+                (lambda (_buffer status)
+                  (setq egix--build-process nil)
+                  (if (string-prefix-p "finished" status)
+                      (progn
+                        (message "egix-module: build finished")
+                        (egix-load-module))
+                    (message
+                     "egix-module: build failed, see *egix-module-build* buffer")))
+                nil t))))
 
 ;;;###autoload
 (defun egix-load-module ()
   "Load the egix native module."
   (interactive)
   (unless (featurep 'egix-module)
-    (condition-case err
-        (module-load (egix--module-filename))
-      (error
-       (error "Egix module could not be loaded: %s" (error-message-string err))))))
+    (if (egix--build-in-progress-p)
+        (message "egix-module: cannot load module while build is in progress")
+      (condition-case err
+          (module-load (egix--module-filename))
+        (error
+         (error "Egix module could not be loaded: %s" (error-message-string err)))))))
 
-;; TODO run the build in an async process
+
 ;;;###autoload
 (defun egix-build-and-load ()
   "Build the module if it doesn't already exist.
 cargo must be in the PATH."
-  (if (executable-find "cargo")
-      ;; Run cargo even if the module has already been built for now
-      ;; cargo is smart enough to not do real work if not needed
-      (let ((default-directory egix--root))
-        (message "egix-module: building Rust module with cargo…")
-        (unless (eq 0 (call-process "cargo" nil "*egix-module-build*" t
-                                    "build" "--release"))
-          (error "egix-module: cargo build failed")))
+  (interactive)
+  (unless (executable-find "cargo")
     (error "egix: cargo not found, the module cannot be built"))
-  (egix-load-module))
 
+  (if (egix--build-in-progress-p)
+      (message "egix-module: build already running")
+    ;; Run cargo even if the module has already been built for now
+    ;; cargo is smart enough to not do real work if not needed
+    (egix--start-build)))
 
 ;; Automatically load the module when this file is loaded
 (egix-build-and-load)

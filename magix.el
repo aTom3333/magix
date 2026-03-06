@@ -67,17 +67,19 @@ Returns t if compatible, nil otherwise."
 
 (defun magix--log-mismatch (func-name args magix-result original-result)
   "Log a mismatch between MAGIX-RESULT and ORIGINAL-RESULT for FUNC-NAME with ARGS."
-  (with-current-buffer (get-buffer-create "*magix-debug*")
-    (goto-char (point-max))
-    (insert (format "\n=== MISMATCH DETECTED ===\n"))
-    (insert (format "Function: %s\n" func-name))
-    (insert (format "Time: %s\n" (current-time-string)))
-    (insert (format "Directory: %s\n" default-directory))
-    (insert (format "Args: %S\n" args))
-    (insert (format "Magix result: %S\n" magix-result))
-    (insert (format "Original result: %S\n" original-result))
-    (insert (format "========================\n\n")))
-  (message "Magix: Mismatch detected in %s - see *magix-debug* buffer" func-name))
+  (let ((dir default-directory)) ; capture directory before working on another buffer
+    (with-current-buffer (get-buffer-create "*magix-debug*")
+      (goto-char (point-max))
+      (insert (format "\n=== MISMATCH DETECTED ===\n"))
+      (insert (format "Function: %s\n" func-name))
+      (insert (format "Time: %s\n" (current-time-string)))
+      (insert (format "Directory: %s\n" dir))
+      (insert (format "Args: %S\n" args))
+      (insert (format "Magix result: %S\n" magix-result))
+      (insert (format "Original result: %S\n" original-result))
+      (insert (format "========================\n\n"))))
+  (message "Magix: Mismatch detected in %s - see *magix-debug* buffer" func-name)
+  (error "Mismatch detected"))
 
 (defmacro magix--advise-override-helper (func-name args orig-func orig-args &rest body)
   "Helper to implement a function that overrides a magit function.

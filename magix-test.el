@@ -43,9 +43,9 @@
 (ert-deftest magix-test-magit-status-with-override ()
   "Test that magit-status works with magix overrides enabled."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-    (let ((magix-mode t)
-          (magix-debug-mode t))
+    (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
       
       ;; Call magit-status which internally uses our overridden functions
@@ -59,9 +59,9 @@
 (ert-deftest magix-test-magit-toplevel ()
   "Test that magit-toplevel works with magix override."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-    (let ((magix-mode t)
-          (magix-debug-mode t))
+    (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
       
       ;; Call magit-toplevel
@@ -79,9 +79,9 @@
 (ert-deftest magix-test-magit-inside-worktree-p ()
   "Test that magit-inside-worktree-p works with magix override."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-    (let ((magix-mode t)
-          (magix-debug-mode t))
+    (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
       
       ;; Inside repo should return t
@@ -90,8 +90,7 @@
       (magix-test--assert-no-mismatch)))
   
   ;; Outside repo should return nil with noerror
-  (let ((magix-mode t)
-        (magix-debug-mode t)
+  (let ((magix-debug-mode t)
         (default-directory temporary-file-directory))
     (magix-test--clear-debug-buffer)
     
@@ -100,9 +99,9 @@
 (ert-deftest magix-test-magit-get-current-branch ()
   "Test that magit-get-current-branch works with magix override."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-    (let ((magix-mode t)
-          (magix-debug-mode t))
+    (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
       
       ;; Get current branch
@@ -117,9 +116,9 @@
 (ert-deftest magix-test-magit-list-refs ()
   "Test that magit-list-refs works with magix overrides active."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-    (let ((magix-mode t)
-          (magix-debug-mode t))
+    (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
       
       ;; Get list of refs
@@ -133,9 +132,9 @@
 (ert-deftest magix-test-magit-log-current ()
   "Test that magit-log-current works with magix overrides active."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-    (let ((magix-mode t)
-          (magix-debug-mode t))
+    (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
       
       ;; Show log buffer
@@ -149,26 +148,26 @@
 (ert-deftest magix-test-tramp-exclusion ()
   "Test that magix correctly excludes TRAMP paths."
   (skip-unless (featurep 'egix-module))
-  (let ((magix-mode t)
-        (default-directory "/ssh:remote:/some/path"))
+  (should magix-mode)
+  (let ((default-directory "/ssh:remote:/some/path"))
     ;; TRAMP paths should not be accelerated
     (should-not (magix--should-accelerate-p))))
 
 (ert-deftest magix-test-excluded-repositories ()
   "Test that magix correctly handles excluded repositories."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-        (let ((magix-mode t)
-          (magix-excluded-repositories (list egix-test-repo-path)))
+    (let ((magix-excluded-repositories (list egix-test-repo-path)))
       ;; Excluded repo should not be accelerated
       (should-not (magix--should-accelerate-p)))))
 
 (ert-deftest magix-test-debug-mode-detection ()
   "Test that debug mode properly detects and logs mismatches."
   (skip-unless (featurep 'egix-module))
+  (should magix-mode)
   (egix-test--with-test-repo
-    (let ((magix-mode t)
-          (magix-debug-mode t))
+    (let ((magix-debug-mode t))
       ;; Clear debug buffer
       (when (get-buffer "*magix-debug*")
         (kill-buffer "*magix-debug*"))

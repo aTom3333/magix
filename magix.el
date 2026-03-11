@@ -123,7 +123,12 @@ but only return it if DIRECTORY is not inside gitdir of the repo.
 Default value for DIRECTORY is DEFAULT-DIRECTORY
 Returns nil if DIRECTORY is inside the gitdir."
   (let* ((directory (or directory default-directory))
-         (repo (egix-repo-discover directory))
+         ;; Work around behavior difference between git oxide and git
+         ;; when giving a path to a symlink that is inside a git repo and
+         ;; that points to a directory in another git repo, git works on
+         ;; the repo containing the pointed to directory whereas gix
+         ;; returns the repo containing the symlink
+         (repo (egix-repo-discover (file-truename directory)))
          (gitdir (egix-repo-gitdir repo))
          (current-dir (expand-file-name directory)))
     (unless (file-in-directory-p current-dir gitdir)

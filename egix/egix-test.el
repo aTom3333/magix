@@ -21,6 +21,7 @@
   (should (fboundp 'egix-repo-discover))
   (should (fboundp 'egix-repo-current-branch))
   (should (fboundp 'egix-repo-workdir))
+  (should (fboundp 'egix-repo-gitdir))
   (should (fboundp 'egix-revparse-single)))
 
 (ert-deftest egix-test-repo-discover ()
@@ -43,6 +44,15 @@
       ;; Workdir should match our test repo path (normalize both to compare)
       (should (string= (file-name-as-directory (expand-file-name workdir))
                        (file-name-as-directory (expand-file-name egix-test-repo-path)))))))
+
+(ert-deftest egix-test-repo-gitdir ()
+  "Test the egix-repo-gitdir function."
+  (egix-test--with-test-repo
+    (let* ((repo (egix-repo-discover default-directory))
+           (gitdir (egix-repo-gitdir repo)))
+      (should gitdir)
+      (should (stringp gitdir))
+      (should (equal (expand-file-name ".git" egix-test-repo-path) gitdir)))))
 
 (ert-deftest egix-test-repo-current-branch ()
   "Test the egix-repo-current-branch function."

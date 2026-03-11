@@ -117,14 +117,25 @@ Checks if current directory is in an excluded repository or accessed via TRAMP."
                                       (expand-file-name default-directory)))
                      magix-excluded-repositories))))
 
+(defun magix--repo-discover-if-not-inside-gitdir (&optional directory)
+  "Discover repo, by usage of egix-repo-discover, in directory DIRECTORY
+but only return it if DIRECTORY is not inside gitdir of the repo.
+Default value for DIRECTORY is DEFAULT-DIRECTORY
+Returns nil if DIRECTORY is inside the gitdir."
+  (let* ((directory (or directory default-directory))
+         (repo (egix-repo-discover directory))
+         (gitdir (egix-repo-gitdir repo))
+         (current-dir (expand-file-name directory)))
+    (unless (file-in-directory-p current-dir gitdir)
+      repo)))
+
 (defun magix--git-string-dispatch (args)
   "Return a git-string result for ARGS using egix, or nil if not handled."
   (pcase args
     (`("rev-parse" "--show-toplevel" . ,_)
      (condition-case nil
-       (let* ((repo (egix-repo-discover default-directory))
-          (root (egix-repo-workdir repo)))
-           (magix--normalize-toplevel-path root))
+         (if-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
+             (magix--normalize-toplevel-path (egix-repo-workdir repo)))
        (error nil)))
     (`("rev-parse" "--is-inside-work-tree" . ,_)
      (if (condition-case nil

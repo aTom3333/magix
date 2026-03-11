@@ -35,6 +35,12 @@ fn repo_workdir(repo: &gix::Repository) -> Result<Option<String>> {
     Ok(root)
 }
 
+/// Get repository git dir from a Repository handle
+#[defun]
+fn repo_gitdir(repo: &gix::Repository) -> Result<String> {
+    Ok(repo.git_dir().to_string_lossy().to_string())
+}
+
 /// Get an object id (as a string) from a string that represents a single object
 #[defun]
 fn revparse_single(repo: &gix::Repository, spec: String) -> Result<String> {

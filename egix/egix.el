@@ -48,6 +48,14 @@
   "Returns t if a build of egix-module is in progress"
   (process-live-p egix--build-process))
 
+(defun egix--wait-for-build ()
+  "Wait for any in-progress build to finish.
+Returns t if the module is now loaded, nil if build failed."
+  (when (egix--build-in-progress-p)
+    (while (egix--build-in-progress-p)
+      (sit-for 0.1)))
+  (featurep 'egix-module))
+
 (defun egix--start-build ()
   "Start the egix cargo build process."
   (require 'ansi-color)

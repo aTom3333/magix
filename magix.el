@@ -134,31 +134,28 @@ Returns nil if DIRECTORY is inside the gitdir."
     (unless (file-in-directory-p current-dir gitdir)
       repo)))
 
+(defun magix--not-option-p (s)
+  "Check that s is a string that doesn't start with a -"
+  (and (stringp s)
+       (not (string-prefix-p "-" s))))
+
 (defun magix--git-string-dispatch (args)
   "Return a git-string result for ARGS using egix, or nil if not handled."
   (pcase args
-    (`("rev-parse" "--show-toplevel" . ,_)
+    (`("rev-parse" "--show-toplevel")
      (condition-case nil
          (if-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
              (magix--normalize-toplevel-path (egix-repo-workdir repo)))
        (error nil)))
-    (`("rev-parse" "--is-inside-work-tree" . ,_)
-     (if (condition-case nil
-             (progn
-               (egix-repo-discover default-directory)
-               t)
-           (error nil))
-         "true"
-       "false"))
-    (`("rev-parse" "--abbrev-ref" "HEAD" . ,_)
+    (`("rev-parse" ,(and ref (pred magix--not-option-p)))
      (condition-case nil
-         (let ((repo (egix-repo-discover default-directory)))
-           (egix-repo-current-branch repo))
+         (if-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
+             (egix-revparse-single repo ref))
        (error nil)))
-    (`("symbolic-ref" "--short" "HEAD" . ,_)
+    (`("rev-parse" "--verify" ,(and ref (pred magix--not-option-p)))
      (condition-case nil
-         (let ((repo (egix-repo-discover default-directory)))
-           (egix-repo-current-branch repo))
+         (if-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
+             (egix-revparse-single repo ref))
        (error nil)))
     (_ nil)))
 

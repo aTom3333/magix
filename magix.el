@@ -4,7 +4,7 @@
 
 ;; Author: Thomas Ferrand
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (magit "4.5") (egix "0.1.0"))
+;; Package-Requires: ((emacs "30.1") (magit "4.5"))
 ;; Keywords: git, magit, performance
 ;; URL: https://github.com/aTom3333/magix
 

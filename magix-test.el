@@ -145,6 +145,66 @@
       
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-abbrev-length ()
+  "Test that `magit-abbrev-length' works with the magix --short override.
+`magit-abbrev-length' runs `rev-parse --short' against HEAD and HEAD~,
+exercising the dispatcher's `(\"rev-parse\" \"--short\" REF)' arm."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      (magit-abbrev-length)
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-ref-abbrev ()
+  "Test that `magit-ref-abbrev' works with the magix --verify --abbrev-ref
+override (existing branch, fully-qualified ref, and a non-existent name)."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      (magit-ref-abbrev "test-branch")
+      (magit-ref-abbrev "refs/heads/test-branch")
+      (magit-ref-abbrev "no-such-branch")
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-ref-abbrev-upstream ()
+  "Test that `magit-ref-abbrev' works for BRANCH@{upstream} / @{u}, and
+falls through correctly for unsupported `@{…}' shapes."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (egix-test--with-upstream-remote
+      (let ((magix-debug-mode t))
+        (magix-test--clear-debug-buffer)
+        (magit-ref-abbrev "test-branch@{upstream}")
+        (magit-ref-abbrev "test-branch@{u}")
+        (magit-ref-abbrev "no-upstream-branch@{upstream}")
+        ;; Unsupported reflog/push shapes must fall through to git
+        (magit-ref-abbrev "HEAD@{1}")
+        (magit-ref-abbrev "test-branch@{push}")
+        (magix-test--assert-no-mismatch)))))
+
+(ert-deftest magix-test-magit-gitdir ()
+  "Test that `magit-gitdir' works with the magix --git-dir override across
+every gitdir shape — normal, --separate-git-dir, linked worktree, submodule
+and combinations thereof — exercised both at the toplevel and from a
+subdirectory."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let* ((root (make-temp-file "magix-gitdir-" t))
+         (scenarios (egix-test--build-gitdir-scenarios root)))
+    (unwind-protect
+        (let ((magix-debug-mode t))
+          (magix-test--clear-debug-buffer)
+          (pcase-dolist (`(,_label . ,cwd) scenarios)
+            (let ((default-directory (file-name-as-directory cwd)))
+              (magit-gitdir)))
+          (magix-test--assert-no-mismatch))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-tramp-exclusion ()
   "Test that magix correctly excludes TRAMP paths."
   (skip-unless (featurep 'egix-module))

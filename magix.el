@@ -139,24 +139,71 @@ Returns nil if DIRECTORY is inside the gitdir."
   (and (stringp s)
        (not (string-prefix-p "-" s))))
 
+(defun magix--rev-parse-git-dir (repo)
+  "Return what `git rev-parse --git-dir' would print for REPO from `default-directory'.
+
+Git prints the literal string `.git' only when `.git' in the worktree root is a
+regular directory and CWD is that worktree root; bare repos at their own root
+print `.'; every other shape (gitfile/--separate-git-dir, linked worktree,
+submodule, subdir of a normal repo, etc.) prints the absolute gitdir."
+  (let* ((gitdir (egix-repo-gitdir repo))
+         (workdir (ignore-errors (egix-repo-workdir repo))))
+    (cond
+     ;; Bare repo: gitdir is the directory; from its root git prints ".".
+     ((and (null workdir)
+           (file-equal-p default-directory gitdir))
+      ".")
+     ;; Normal repo (.git is a real directory) and CWD is the worktree root.
+     ((and workdir
+           (file-equal-p default-directory workdir)
+           (let ((attrs (file-attributes (expand-file-name ".git" workdir))))
+             ;; file-attributes returns t in the first slot only for plain dirs;
+             ;; gitfiles are regular files, symlinks return their target string.
+             (eq (car attrs) t)))
+      ".git")
+     (t gitdir))))
+
+(defmacro magix--with-repo (&rest body)
+  "Run BODY with REPO bound to the discovered repository.
+
+Returns a single-element list (VALUE) when BODY produces an answer — including
+the case where VALUE is nil, which means \"definitively no such ref/value\"
+(gix did the work and the right answer is nil); callers should treat this as
+a final result and not call git.
+
+Returns nil when the dispatcher cannot handle this query: no repository was
+discovered, current directory is inside the gitdir, or BODY signalled an error
+(typically because the underlying gix function does not implement this revspec
+shape). Callers should fall back to the git CLI."
+  (declare (indent 0))
+  `(condition-case nil
+       (when-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
+         (list (progn ,@body)))
+     (error nil)))
+
 (defun magix--git-string-dispatch (args)
-  "Return a git-string result for ARGS using egix, or nil if not handled."
+  "Return a wrapped git-string result for ARGS using egix, or nil if not handled.
+
+A non-nil result is always a single-element list (VALUE); VALUE may itself be
+nil to signal a definitive \"no such ref\" answer. nil means \"fall back to git\"."
   (pcase args
     (`("rev-parse" "--show-toplevel")
-     (condition-case nil
-         (if-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
-             (magix--normalize-toplevel-path (egix-repo-workdir repo)))
-       (error nil)))
+     (magix--with-repo
+       (magix--normalize-toplevel-path (egix-repo-workdir repo))))
+    (`("rev-parse" "--git-dir")
+     (magix--with-repo (magix--rev-parse-git-dir repo)))
+    (`("rev-parse" "--short" ,(and ref (pred magix--not-option-p)))
+     (magix--with-repo (egix-revparse-short repo ref)))
+    (`("rev-parse" "--verify" "--abbrev-ref" ,(and ref (pred magix--not-option-p)))
+     (magix--with-repo (egix-revparse-abbrev-ref repo ref)))
     (`("rev-parse" ,(and ref (pred magix--not-option-p)))
-     (condition-case nil
-         (if-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
-             (egix-revparse-single repo ref))
-       (error nil)))
+     (magix--with-repo (egix-revparse-single repo ref)))
     (`("rev-parse" "--verify" ,(and ref (pred magix--not-option-p)))
-     (condition-case nil
-         (if-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
-             (egix-revparse-single repo ref))
-       (error nil)))
+     (magix--with-repo (egix-revparse-single repo ref)))
+    (`("symbolic-ref" "--short" ,(and ref (pred magix--not-option-p)))
+     (magix--with-repo (egix-symbolic-ref-short repo ref)))
+    (`("symbolic-ref" ,(and ref (pred magix--not-option-p)))
+     (magix--with-repo (egix-symbolic-ref repo ref)))
     (_ nil)))
 
 (defun magix-magit-git-string (orig-func &rest args)
@@ -164,8 +211,8 @@ Returns nil if DIRECTORY is inside the gitdir."
 ORIG-FUNC is the original `magit-git-string' function.
 ARGS are the git arguments passed to `magit-git-string'."
   (magix--advise-override-helper magit-git-string (list :args args) orig-func args
-    (or (magix--git-string-dispatch args)
-        (apply orig-func args))))
+    (let ((dispatched (magix--git-string-dispatch args)))
+      (if dispatched (car dispatched) (apply orig-func args)))))
 
 (defun magix-magit-git-str (orig-func &rest args)
   "Intercept `magit-git-str' to serve common queries via egix.
@@ -173,8 +220,8 @@ ORIG-FUNC is the original `magit-git-str' function.
 ARGS are the git arguments passed to `magit-git-str'."
   (let ((flat-args (flatten-tree args)))
     (magix--advise-override-helper magit-git-str (list :args flat-args) orig-func args
-      (or (magix--git-string-dispatch flat-args)
-          (apply orig-func args)))))
+      (let ((dispatched (magix--git-string-dispatch flat-args)))
+        (if dispatched (car dispatched) (apply orig-func args))))))
 
 
 (define-minor-mode magix-mode

@@ -81,30 +81,6 @@ Returns t if compatible, nil otherwise."
   (message "Magix: Mismatch detected in %s - see *magix-debug* buffer" func-name)
   (error "Mismatch detected"))
 
-(defmacro magix--advise-override-helper (func-name args orig-func orig-args &rest body)
-  "Helper to implement a function that overrides a magit function.
-Will run BODY is the repo should be accelerated (see magix--should-accelerate-p).
-If magix-debug-mode in non-nil, will additionnaly run the original function
-and compare the results.
-FUNC-NAME is the symbol of the function for logging.
-ARGS is a plist of arguments for logging.
-ORIG-FUNC is the original function symbol.
-ORIG-ARGS is a list of arguments to pass to the original function.
-BODY should evaluate to the magix result.
-Automatically checks if acceleration should be enabled via `magix--should-accelerate-p'."
-  (declare (indent 4))
-  `(if (magix--should-accelerate-p)
-       (let ((magix-result (progn ,@body)))
-         (if magix-debug-mode
-             (let ((original-result (condition-case nil
-                                        (apply ,orig-func ,orig-args)
-                                      (error nil))))
-               (unless (equal magix-result original-result)
-                 (magix--log-mismatch ',func-name ,args magix-result original-result))
-               original-result)
-           magix-result))
-     (apply ,orig-func ,orig-args)))
-
 (defun magix--should-accelerate-p ()
   "Return non-nil if magix acceleration should be active in current context.
 Checks if current directory is in an excluded repository or accessed via TRAMP."
@@ -181,61 +157,75 @@ shape). Callers should fall back to the git CLI."
          (list (progn ,@body)))
      (error nil)))
 
-(defun magix--git-string-dispatch (args)
-  "Return a wrapped git-string result for ARGS using egix, or nil if not handled.
+(defmacro magix--line (form)
+  "Evaluate FORM; if it yields a non-nil string, append a trailing newline.
+Helper for dispatcher arms that produce single-line git output."
+  `(let ((v ,form)) (and v (concat v "\n"))))
 
-A non-nil result is always a single-element list (VALUE); VALUE may itself be
-nil to signal a definitive \"no such ref\" answer. nil means \"fall back to git\"."
+(defun magix--git-output-dispatch (args)
+  "Return raw git output for ARGS using egix, or nil if not handled.
+
+A non-nil result is a single-element list (BYTES); BYTES is what git would
+have written to stdout (matching its exact format, including trailing
+newlines). BYTES may be nil to signal a definitive empty / not-found
+result. nil means \"fall back to git\"."
   (pcase args
     (`("rev-parse" "--show-toplevel")
      (magix--with-repo
-       (magix--normalize-toplevel-path (egix-repo-workdir repo))))
+       (magix--line (magix--normalize-toplevel-path (egix-repo-workdir repo)))))
     (`("rev-parse" "--git-dir")
-     (magix--with-repo (magix--rev-parse-git-dir repo)))
+     (magix--with-repo (magix--line (magix--rev-parse-git-dir repo))))
     (`("rev-parse" "--is-bare-repository")
-     (magix--with-repo (if (egix-repo-workdir repo) "false" "true")))
+     (magix--with-repo (if (egix-repo-workdir repo) "false\n" "true\n")))
     (`("rev-parse" "--short" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (egix-revparse-short repo ref)))
+     (magix--with-repo (magix--line (egix-revparse-short repo ref))))
     (`("rev-parse" "--verify" "--abbrev-ref" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (egix-revparse-abbrev-ref repo ref)))
+     (magix--with-repo (magix--line (egix-revparse-abbrev-ref repo ref))))
     (`("rev-parse" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (egix-revparse-single repo ref)))
+     (magix--with-repo (magix--line (egix-revparse-single repo ref))))
     (`("rev-parse" "--verify" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (egix-revparse-single repo ref)))
+     (magix--with-repo (magix--line (egix-revparse-single repo ref))))
     (`("symbolic-ref" "--short" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (egix-symbolic-ref-short repo ref)))
+     (magix--with-repo (magix--line (egix-symbolic-ref-short repo ref))))
     (`("symbolic-ref" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (egix-symbolic-ref repo ref)))
+     (magix--with-repo (magix--line (egix-symbolic-ref repo ref))))
     (_ nil)))
 
-(defun magix-magit-git-string (orig-func &rest args)
-  "Intercept `magit-git-string' to serve common queries via egix.
-ORIG-FUNC is the original `magit-git-string' function.
-ARGS are the git arguments passed to `magit-git-string'."
-  (magix--advise-override-helper magit-git-string (list :args args) orig-func args
-    (let ((dispatched (magix--git-string-dispatch args)))
-      (if dispatched (car dispatched) (apply orig-func args)))))
+(defun magix--destination-is-current-buffer-p (destination)
+  "Return non-nil when DESTINATION causes stdout to land in the current buffer.
+Recognises the forms used by magit on the hot path (t or (t ...))."
+  (or (eq destination t)
+      (and (consp destination) (eq (car destination) t))))
 
-(defun magix-magit-git-str (orig-func &rest args)
-  "Intercept `magit-git-str' to serve common queries via egix.
-ORIG-FUNC is the original `magit-git-str' function.
-ARGS are the git arguments passed to `magit-git-str'."
-  (let ((flat-args (flatten-tree args)))
-    (magix--advise-override-helper magit-git-str (list :args flat-args) orig-func args
-      (let ((dispatched (magix--git-string-dispatch flat-args)))
-        (if dispatched (car dispatched) (apply orig-func args))))))
-
-(defun magix-magit-git-output (orig-func &rest args)
-  "Intercept `magit-git-output' (used by `magit-git-true'/`-false').
-Re-adds the trailing newline because `magit-git-output' returns raw buffer
-contents, unlike `magit-git-string' which strips."
-  (let ((flat-args (flatten-tree args)))
-    (magix--advise-override-helper magit-git-output (list :args flat-args) orig-func args
-      (let ((dispatched (magix--git-string-dispatch flat-args)))
-        (cond
-         ((null dispatched) (apply orig-func args))
-         ((stringp (car dispatched)) (concat (car dispatched) "\n"))
-         (t (car dispatched)))))))
+(defun magix-magit-process-git (orig-func destination &rest args)
+  "Intercept `magit-process-git'. Single chokepoint for every git invocation
+in magit (all wrappers funnel through here)."
+  (let* ((flat-args (flatten-tree args))
+         (dispatched (and (magix--should-accelerate-p)
+                          (magix--git-output-dispatch flat-args)))
+         (writes-current (magix--destination-is-current-buffer-p destination)))
+    (cond
+     ;; Not handled, or unfamiliar destination shape — pass through.
+     ((or (null dispatched) (not writes-current))
+      (apply orig-func destination args))
+     ;; Debug-mode: run git for real, capture what it inserted, compare.
+     (magix-debug-mode
+      (let ((before (point))
+            (magix-bytes (or (car dispatched) ""))
+            (magix-exit (if (car dispatched) 0 1))
+            orig-exit orig-bytes)
+        (setq orig-exit (apply orig-func destination args))
+        (setq orig-bytes (buffer-substring-no-properties before (point)))
+        (unless (and (equal magix-bytes orig-bytes)
+                     (eq (zerop magix-exit) (zerop orig-exit)))
+          (magix--log-mismatch 'magit-process-git (list :args flat-args)
+                                (cons magix-bytes magix-exit)
+                                (cons orig-bytes orig-exit)))
+        orig-exit))
+     ;; Definitive not-found: write nothing, exit non-zero.
+     ((null (car dispatched)) 1)
+     ;; Found: write magix bytes, exit zero.
+     (t (insert (car dispatched)) 0))))
 
 
 (define-minor-mode magix-mode
@@ -255,17 +245,9 @@ gitoxide implementation instead of calling Git CLI commands."
         ;; Add around advice to Magit functions with signature checking
         (setq magix--advised-functions nil)
         
-        (when (magix--check-function-signature 'magit-git-string '(&rest args))
-          (advice-add 'magit-git-string :around #'magix-magit-git-string)
-          (push 'magit-git-string magix--advised-functions))
-
-        (when (magix--check-function-signature 'magit-git-str '(&rest args))
-          (advice-add 'magit-git-str :around #'magix-magit-git-str)
-          (push 'magit-git-str magix--advised-functions))
-
-        (when (magix--check-function-signature 'magit-git-output '(&rest args))
-          (advice-add 'magit-git-output :around #'magix-magit-git-output)
-          (push 'magit-git-output magix--advised-functions))
+        (when (magix--check-function-signature 'magit-process-git '(destination &rest args))
+          (advice-add 'magit-process-git :around #'magix-magit-process-git)
+          (push 'magit-process-git magix--advised-functions))
         
         (if magix--advised-functions
             (message "Magix acceleration enabled (%d functions advised)"

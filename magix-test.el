@@ -105,8 +105,8 @@ Includes the edge cases where `core.bare' disagrees with the repo layout."
   (egix-test--with-test-repo
     (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
-      (should (equal (magix--git-string-dispatch '("rev-parse" "--is-bare-repository"))
-                     '("false")))
+      (should (equal (magix--git-output-dispatch '("rev-parse" "--is-bare-repository"))
+                     '("false\n")))
       ;; non-bare layout: default, then core.bare=true, then core.bare=false
       (magit-bare-repo-p)
       (shell-command "git config core.bare true")

@@ -68,6 +68,22 @@
       ;; Should be on test-branch that we created
       (should (string= branch "test-branch")))))
 
+(ert-deftest egix-test-revparse-single-nonexistent-ref ()
+  "A ref that doesn't exist must yield nil, not an error — otherwise the
+magix dispatcher falls through to git and wastes a process spawn."
+  (egix-test--with-fresh-test-repo
+    (let ((repo (egix-repo-discover default-directory)))
+      ;; Fully-qualified refs that do not exist
+      (should-not (egix-revparse-single repo "refs/tags/no-such-tag"))
+      (should-not (egix-revparse-single repo "refs/heads/no-such-branch"))
+      (should-not (egix-revparse-single repo "refs/stash"))
+      ;; Bare name that doesn't resolve to anything
+      (should-not (egix-revparse-single repo "no-such-rev-xyz"))
+      ;; Sanity: a ref that DOES exist still returns its SHA
+      (let ((head (egix-revparse-single repo "HEAD")))
+        (should (stringp head))
+        (should (= (length head) 40))))))
+
 (ert-deftest egix-test-revparse-short ()
   "Test egix-revparse-short returns abbreviated object ids."
   (egix-test--with-test-repo

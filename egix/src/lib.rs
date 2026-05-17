@@ -48,11 +48,14 @@ fn repo_gitdir(repo: &gix::Repository) -> Result<String> {
     Ok(repo.git_dir().to_string_lossy().to_string())
 }
 
-/// Get an object id (as a string) from a string that represents a single object
+/// Resolve SPEC to an object id (as a string). Returns nil if SPEC does not
+/// resolve, so callers can short-circuit instead of consulting git.
 #[defun]
-fn revparse_single(repo: &gix::Repository, spec: String) -> Result<String> {
-    let id = repo.rev_parse_single(spec.as_str())?;
-    Ok(id.to_string())
+fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
+    let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
+        return Ok(None);
+    };
+    Ok(Some(id.to_string()))
 }
 
 /// Equivalent to `git rev-parse --short SPEC`: abbreviated hex of the resolved object id.

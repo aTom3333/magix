@@ -192,6 +192,8 @@ nil to signal a definitive \"no such ref\" answer. nil means \"fall back to git\
        (magix--normalize-toplevel-path (egix-repo-workdir repo))))
     (`("rev-parse" "--git-dir")
      (magix--with-repo (magix--rev-parse-git-dir repo)))
+    (`("rev-parse" "--is-bare-repository")
+     (magix--with-repo (if (egix-repo-workdir repo) "false" "true")))
     (`("rev-parse" "--short" ,(and ref (pred magix--not-option-p)))
      (magix--with-repo (egix-revparse-short repo ref)))
     (`("rev-parse" "--verify" "--abbrev-ref" ,(and ref (pred magix--not-option-p)))
@@ -223,6 +225,18 @@ ARGS are the git arguments passed to `magit-git-str'."
       (let ((dispatched (magix--git-string-dispatch flat-args)))
         (if dispatched (car dispatched) (apply orig-func args))))))
 
+(defun magix-magit-git-output (orig-func &rest args)
+  "Intercept `magit-git-output' (used by `magit-git-true'/`-false').
+Re-adds the trailing newline because `magit-git-output' returns raw buffer
+contents, unlike `magit-git-string' which strips."
+  (let ((flat-args (flatten-tree args)))
+    (magix--advise-override-helper magit-git-output (list :args flat-args) orig-func args
+      (let ((dispatched (magix--git-string-dispatch flat-args)))
+        (cond
+         ((null dispatched) (apply orig-func args))
+         ((stringp (car dispatched)) (concat (car dispatched) "\n"))
+         (t (car dispatched)))))))
+
 
 (define-minor-mode magix-mode
   "Toggle gitoxide-powered Magit acceleration.
@@ -248,6 +262,10 @@ gitoxide implementation instead of calling Git CLI commands."
         (when (magix--check-function-signature 'magit-git-str '(&rest args))
           (advice-add 'magit-git-str :around #'magix-magit-git-str)
           (push 'magit-git-str magix--advised-functions))
+
+        (when (magix--check-function-signature 'magit-git-output '(&rest args))
+          (advice-add 'magit-git-output :around #'magix-magit-git-output)
+          (push 'magit-git-output magix--advised-functions))
         
         (if magix--advised-functions
             (message "Magix acceleration enabled (%d functions advised)"

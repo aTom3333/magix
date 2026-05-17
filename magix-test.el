@@ -96,6 +96,37 @@
     
     (should-not (magit-inside-worktree-p t))))
 
+(ert-deftest magix-test-magit-bare-repo-p ()
+  "Test `magit-bare-repo-p' with the magix --is-bare-repository override.
+Includes the edge cases where `core.bare' disagrees with the repo layout."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  ;; Dispatcher must intercept the common non-bare-layout case.
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      (should (equal (magix--git-string-dispatch '("rev-parse" "--is-bare-repository"))
+                     '("false")))
+      ;; non-bare layout: default, then core.bare=true, then core.bare=false
+      (magit-bare-repo-p)
+      (shell-command "git config core.bare true")
+      (magit-bare-repo-p)
+      (shell-command "git config core.bare false")
+      (magit-bare-repo-p)
+      (magix-test--assert-no-mismatch)))
+  ;; bare layout: magix falls through, debug-mode still cross-checks
+  (let ((bare-dir (make-temp-file "magix-bare-edge-" t))
+        (magix-debug-mode t))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory bare-dir)))
+          (shell-command "git init -q --bare")
+          (magix-test--clear-debug-buffer)
+          (magit-bare-repo-p)
+          (shell-command "git config core.bare false")
+          (magit-bare-repo-p)
+          (magix-test--assert-no-mismatch))
+      (delete-directory bare-dir t))))
+
 (ert-deftest magix-test-magit-get-current-branch ()
   "Test that magit-get-current-branch works with magix override."
   (skip-unless (featurep 'egix-module))

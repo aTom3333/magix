@@ -38,7 +38,7 @@ fn repo_current_branch(repo: &gix::Repository) -> Result<Option<String>> {
 /// Get repository root path from a Repository handle
 #[defun]
 fn repo_workdir(repo: &gix::Repository) -> Result<Option<String>> {
-    let root = repo.work_dir().map(|p| p.to_string_lossy().to_string());
+    let root = repo.workdir().map(|p| p.to_string_lossy().to_string());
     Ok(root)
 }
 
@@ -103,7 +103,7 @@ fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<St
     // git's --abbrev-ref follows one level of symbolic ref (e.g. HEAD -> main).
     let name = match reference.target() {
         gix::refs::TargetRef::Symbolic(target) => target.shorten().to_string(),
-        gix::refs::TargetRef::Peeled(_) => reference.name().shorten().to_string(),
+        gix::refs::TargetRef::Object(_) => reference.name().shorten().to_string(),
     };
     Ok(Some(name))
 }
@@ -129,6 +129,6 @@ fn symbolic_target(repo: &gix::Repository, ref_name: &str, short: bool) -> Optio
         } else {
             target.as_bstr().to_string()
         }),
-        gix::refs::TargetRef::Peeled(_) => None,
+        gix::refs::TargetRef::Object(_) => None,
     }
 }

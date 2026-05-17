@@ -12,8 +12,7 @@ name = "egix_module"
 
 [dependencies]
 emacs = "0.19"
-gix = "0.63"
-gix-status = "0.10"
+gix = "0.83"
 anyhow = "1.0"
 thiserror = "1.0"
 

@@ -48,20 +48,33 @@ fn repo_gitdir(repo: &gix::Repository) -> Result<String> {
     Ok(repo.git_dir().to_string_lossy().to_string())
 }
 
+fn reject_reflog_revspec(fn_name: &str, spec: &str) -> Result<()> {
+    if spec.contains("@{") {
+        // gix and git can diverge on @{N}/@{-N}/@{push}/etc. — e.g. @{-1} returns a
+        // stale OID when the previous branch is deleted. Defer to git.
+        // TODO re-evaluate if https://github.com/GitoxideLabs/gitoxide/issues/2609 gets fixed
+        return Err(emacs::Error::msg(format!(
+            "{fn_name}: unsupported revspec `{spec}`"
+        )));
+    }
+    Ok(())
+}
+
 /// Resolve SPEC to an object id (as a string). Returns nil if SPEC does not
 /// resolve, so callers can short-circuit instead of consulting git.
 #[defun]
 fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
+    reject_reflog_revspec("egix-revparse-single", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
         return Ok(None);
     };
     Ok(Some(id.to_string()))
 }
 
-/// Equivalent to `git rev-parse --short SPEC`: abbreviated hex of the resolved object id.
-/// Returns nil if SPEC cannot be resolved.
+/// Equivalent to `git rev-parse --short SPEC`. Returns nil if SPEC cannot resolve.
 #[defun]
 fn revparse_short(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
+    reject_reflog_revspec("egix-revparse-short", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
         return Ok(None);
     };

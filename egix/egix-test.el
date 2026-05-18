@@ -84,6 +84,19 @@ magix dispatcher falls through to git and wastes a process spawn."
         (should (stringp head))
         (should (= (length head) 40))))))
 
+(ert-deftest egix-test-revparse-single-deleted-prev-checkout ()
+  "gix's `rev_parse_single' returns a stale OID for `@{-1}' when the previous
+checkout's branch has been deleted; we must NOT propagate that value (nil or
+error are both fine — both let the dispatcher fall back to git)."
+  (egix-test--with-fresh-test-repo
+    ;; Build a `@{-1}' that targets a branch we'll then delete.
+    (shell-command "git -c user.email=x -c user.name=x checkout -q -b prev-target")
+    (shell-command "git -c user.email=x -c user.name=x commit --allow-empty -qm 'on prev-target'")
+    (shell-command "git -c user.email=x -c user.name=x checkout -q -")
+    (shell-command "git branch -D prev-target")
+    (let ((repo (egix-repo-discover default-directory)))
+      (should-not (ignore-errors (egix-revparse-single repo "@{-1}"))))))
+
 (ert-deftest egix-test-revparse-short ()
   "Test egix-revparse-short returns abbreviated object ids."
   (egix-test--with-test-repo

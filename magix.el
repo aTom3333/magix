@@ -39,11 +39,8 @@ Each entry should be an absolute path to a repository root directory."
 (defvar magix--advised-functions nil
   "List of functions that have been successfully advised.")
 
-(defun magix--normalize-toplevel-path (path)
-  "Normalize PATH for git toplevel comparisons.
-Ensure the drive letter is uppercase and resolve to a true path." 
-  ;; Supposedly this shouldn't be needed to get correct behavior
-  ;; but it is there to get exact same paths when comparing implementations
+(defun magix--normalize-path (path)
+  "Canonicalize PATH (resolve symlinks/`..', uppercase Windows drive letter)."
   (let ((normalized (directory-file-name (file-truename (expand-file-name path)))))
     (if (string-match "^[a-zA-Z]:" normalized)
         (concat (upcase (substring normalized 0 1)) (substring normalized 1))
@@ -116,12 +113,7 @@ Returns nil if DIRECTORY is inside the gitdir."
        (not (string-prefix-p "-" s))))
 
 (defun magix--rev-parse-git-dir (repo)
-  "Return what `git rev-parse --git-dir' would print for REPO from `default-directory'.
-
-Git prints the literal string `.git' only when `.git' in the worktree root is a
-regular directory and CWD is that worktree root; bare repos at their own root
-print `.'; every other shape (gitfile/--separate-git-dir, linked worktree,
-submodule, subdir of a normal repo, etc.) prints the absolute gitdir."
+  "Return what `git rev-parse --git-dir' would print for REPO."
   (let* ((gitdir (egix-repo-gitdir repo))
          (workdir (ignore-errors (egix-repo-workdir repo))))
     (cond
@@ -137,7 +129,7 @@ submodule, subdir of a normal repo, etc.) prints the absolute gitdir."
              ;; gitfiles are regular files, symlinks return their target string.
              (eq (car attrs) t)))
       ".git")
-     (t gitdir))))
+     (t (magix--normalize-path gitdir)))))
 
 (defmacro magix--with-repo (&rest body)
   "Run BODY with REPO bound to the discovered repository.
@@ -172,7 +164,7 @@ result. nil means \"fall back to git\"."
   (pcase args
     (`("rev-parse" "--show-toplevel")
      (magix--with-repo
-       (magix--line (magix--normalize-toplevel-path (egix-repo-workdir repo)))))
+       (magix--line (magix--normalize-path (egix-repo-workdir repo)))))
     (`("rev-parse" "--git-dir")
      (magix--with-repo (magix--line (magix--rev-parse-git-dir repo))))
     (`("rev-parse" "--is-bare-repository")

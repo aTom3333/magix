@@ -36,8 +36,21 @@ Each entry should be an absolute path to a repository root directory."
   :type '(repeat directory)
   :group 'magix)
 
+(defcustom magix-record-stats nil
+  "When non-nil, record every git invocation seen by the magix advice.
+Records are kept in `magix--stats-log' and can be inspected with
+`magix-dump-stats' or reset with `magix-clear-stats'."
+  :type 'boolean
+  :group 'magix)
+
 (defvar magix--advised-functions nil
   "List of functions that have been successfully advised.")
+
+(defvar magix--stats-log nil
+  "List of recorded git invocations, most recent first.
+Each entry is a plist with keys :args (list of strings),
+:intercepted (boolean — whether magix served the answer itself),
+and :duration (seconds, float).")
 
 (defun magix--normalize-path (path)
   "Canonicalize PATH (resolve symlinks/`..', uppercase Windows drive letter)."
@@ -193,32 +206,126 @@ Recognises the forms used by magit on the hot path (t or (t ...))."
   "Intercept `magit-process-git'. Single chokepoint for every git invocation
 in magit (all wrappers funnel through here)."
   (let* ((flat-args (flatten-tree args))
+         (start (and magix-record-stats (current-time)))
          (dispatched (and (magix--should-accelerate-p)
                           (magix--git-output-dispatch flat-args)))
-         (writes-current (magix--destination-is-current-buffer-p destination)))
-    (cond
-     ;; Not handled, or unfamiliar destination shape — pass through.
-     ((or (null dispatched) (not writes-current))
-      (apply orig-func destination args))
-     ;; Debug-mode: run git for real, capture what it inserted, compare.
-     (magix-debug-mode
-      (let ((before (point))
-            (magix-bytes (or (car dispatched) ""))
-            (magix-exit (if (car dispatched) 0 1))
-            orig-exit orig-bytes)
-        (setq orig-exit (apply orig-func destination args))
-        (setq orig-bytes (buffer-substring-no-properties before (point)))
-        (unless (and (equal magix-bytes orig-bytes)
-                     (eq (zerop magix-exit) (zerop orig-exit)))
-          (magix--log-mismatch 'magit-process-git (list :args flat-args)
-                                (cons magix-bytes magix-exit)
-                                (cons orig-bytes orig-exit)))
-        orig-exit))
-     ;; Definitive not-found: write nothing, exit non-zero.
-     ((null (car dispatched)) 1)
-     ;; Found: write magix bytes, exit zero.
-     (t (insert (car dispatched)) 0))))
+         (writes-current (magix--destination-is-current-buffer-p destination))
+         (intercepted (and dispatched writes-current))
+         (result
+          (cond
+           ;; Not handled, or unfamiliar destination shape — pass through.
+           ((not intercepted)
+            (apply orig-func destination args))
+           ;; Debug-mode: run git for real, capture what it inserted, compare.
+           (magix-debug-mode
+            (let ((before (point))
+                  (magix-bytes (or (car dispatched) ""))
+                  (magix-exit (if (car dispatched) 0 1))
+                  orig-exit orig-bytes)
+              (setq orig-exit (apply orig-func destination args))
+              (setq orig-bytes (buffer-substring-no-properties before (point)))
+              (unless (and (equal magix-bytes orig-bytes)
+                           (eq (zerop magix-exit) (zerop orig-exit)))
+                (magix--log-mismatch 'magit-process-git (list :args flat-args)
+                                      (cons magix-bytes magix-exit)
+                                      (cons orig-bytes orig-exit)))
+              orig-exit))
+           ;; Definitive not-found: write nothing, exit non-zero.
+           ((null (car dispatched)) 1)
+           ;; Found: write magix bytes, exit zero.
+           (t (insert (car dispatched)) 0))))
+    (when start
+      (magix--stats-record flat-args (and intercepted t)
+                            (float-time (time-since start))))
+    result))
 
+
+(defun magix--stats-record (args intercepted duration)
+  "Push a stats record onto `magix--stats-log'."
+  (push (list :args args :intercepted intercepted :duration duration)
+        magix--stats-log))
+
+(defun magix--stats-signature (args)
+  "Return a normalized signature string for ARGS.
+The first token (the subcommand) is kept verbatim. After that, flag-shaped
+tokens (starting with `-') are kept verbatim and every other token is
+replaced with `<arg>', so calls that differ only in ref/path values
+aggregate together."
+  (let ((first t))
+    (mapconcat (lambda (a)
+                 (cond
+                  (first (setq first nil) (format "%s" a))
+                  ((and (stringp a) (string-prefix-p "-" a)) a)
+                  ((stringp a) "<arg>")
+                  (t (format "%S" a))))
+               args " ")))
+
+(defun magix-clear-stats ()
+  "Discard all recorded git invocation stats."
+  (interactive)
+  (setq magix--stats-log nil)
+  (message "Magix stats cleared"))
+
+(defun magix-dump-stats ()
+  "Display aggregated stats for recorded git invocations.
+Calls are grouped by a normalized signature (flags kept, ref/path
+arguments masked as `<arg>'), then sorted by total time spent so the
+top rows are the highest-value candidates to consider for interception."
+  (interactive)
+  (let ((records magix--stats-log)
+        (groups (make-hash-table :test 'equal)))
+    (dolist (rec records)
+      (let* ((args (plist-get rec :args))
+             (intercepted (plist-get rec :intercepted))
+             (duration (plist-get rec :duration))
+             (sig (magix--stats-signature args))
+             (cell (gethash sig groups)))
+        ;; cell = [count intercepted-count total-duration example-args]
+        (unless cell
+          (setq cell (vector 0 0 0.0 args))
+          (puthash sig cell groups))
+        (aset cell 0 (1+ (aref cell 0)))
+        (when intercepted (aset cell 1 (1+ (aref cell 1))))
+        (aset cell 2 (+ (aref cell 2) duration))))
+    (let (rows
+          (total-count (length records))
+          (total-time 0.0)
+          (total-intercepted 0))
+      (dolist (rec records)
+        (setq total-time (+ total-time (plist-get rec :duration)))
+        (when (plist-get rec :intercepted)
+          (setq total-intercepted (1+ total-intercepted))))
+      (maphash (lambda (sig cell) (push (cons sig cell) rows)) groups)
+      (setq rows (sort rows (lambda (a b)
+                              (> (aref (cdr a) 2) (aref (cdr b) 2)))))
+      (with-current-buffer (get-buffer-create "*magix-stats*")
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (format "Magix git-invocation stats — %d calls, %.3fs total, %d intercepted (%.1f%%)\n\n"
+                          total-count total-time total-intercepted
+                          (if (zerop total-count) 0.0
+                            (/ (* 100.0 total-intercepted) total-count))))
+          (insert (format "%7s %8s %10s %10s  %s\n"
+                          "Count" "Interc.%" "Total(s)" "Mean(ms)" "Signature  [example]"))
+          (insert (make-string 78 ?-)) (insert "\n")
+          (dolist (row rows)
+            (let* ((sig (car row))
+                   (cell (cdr row))
+                   (count (aref cell 0))
+                   (interc (aref cell 1))
+                   (total (aref cell 2))
+                   (example (aref cell 3)))
+              (insert (format "%7d %7.1f%% %10.3f %10.2f  %s\n"
+                              count
+                              (/ (* 100.0 interc) count)
+                              total
+                              (* 1000.0 (/ total count))
+                              sig))
+              (when (not (equal sig (mapconcat #'identity example " ")))
+                (insert (format "%41s  [%s]\n" "" (mapconcat #'identity example " "))))))
+          (goto-char (point-min))
+          (special-mode)))
+      (display-buffer "*magix-stats*"))))
 
 (define-minor-mode magix-mode
   "Toggle gitoxide-powered Magit acceleration.

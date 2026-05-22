@@ -283,6 +283,54 @@ subdirectory."
           ;; No debug buffer means no mismatches - that's good!
           (message "No mismatches detected - magix results match original Magit"))))))
 
+(ert-deftest magix-test-stats-signature ()
+  "Signature aggregator masks non-flag args but keeps flags verbatim."
+  (should (equal (magix--stats-signature '("rev-parse" "--show-toplevel"))
+                 "rev-parse --show-toplevel"))
+  (should (equal (magix--stats-signature '("rev-parse" "HEAD"))
+                 "rev-parse <arg>"))
+  (should (equal (magix--stats-signature '("rev-parse" "--verify" "HEAD"))
+                 "rev-parse --verify <arg>"))
+  (should (equal (magix--stats-signature '("log" "--format=%h %s" "HEAD^{commit}"))
+                 "log --format=%h %s <arg>")))
+
+(ert-deftest magix-test-stats-records-invocations ()
+  "When `magix-record-stats' is on, every git call lands in `magix--stats-log'
+with the right intercept flag."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-record-stats t)
+          (magix--stats-log nil))
+      ;; Intercepted: rev-parse --show-toplevel is in the dispatcher.
+      (magit-toplevel)
+      (should magix--stats-log)
+      (let ((rec (car (last magix--stats-log))))
+        (should (equal (plist-get rec :args) '("rev-parse" "--show-toplevel")))
+        (should (eq (plist-get rec :intercepted) t))
+        (should (floatp (plist-get rec :duration))))
+      ;; Non-intercepted: status -z --porcelain is deliberately not handled.
+      (setq magix--stats-log nil)
+      (magit-git-string "status" "-z" "--porcelain")
+      (should magix--stats-log)
+      (should (eq (plist-get (car magix--stats-log) :intercepted) nil)))))
+
+(ert-deftest magix-test-stats-not-recorded-when-off ()
+  "With `magix-record-stats' nil, the log stays empty."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-record-stats nil)
+          (magix--stats-log nil))
+      (magit-toplevel)
+      (should-not magix--stats-log))))
+
+(ert-deftest magix-test-stats-clear ()
+  "`magix-clear-stats' empties the log."
+  (let ((magix--stats-log '((:args ("rev-parse") :intercepted t :duration 0.001))))
+    (magix-clear-stats)
+    (should-not magix--stats-log)))
+
 (ert-deftest magix-test-mode-toggle ()
   "Test that magix-mode can be toggled on and off."
   (skip-unless (featurep 'egix-module))

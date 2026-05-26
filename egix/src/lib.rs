@@ -96,12 +96,22 @@ fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<St
         let Some(reference) = resolve_ref(repo, branch) else {
             return Ok(None);
         };
-        let Some(Ok(tracking)) =
-            reference.remote_tracking_ref_name(gix::remote::Direction::Fetch)
-        else {
-            return Ok(None);
+        // remote_tracking_ref_name doesn't handle the case where the upstream ref
+        // is a local branch, handle it by using remote_ref_name
+        let is_local = reference
+            .remote_name(gix::remote::Direction::Fetch)
+            .map(|n| n.as_bstr() == ".")
+            .unwrap_or(false);
+        let upstream_ref = if is_local {
+            reference
+                .remote_ref_name(gix::remote::Direction::Fetch)
+                .transpose()?
+        } else {
+            reference
+                .remote_tracking_ref_name(gix::remote::Direction::Fetch)
+                .transpose()?
         };
-        return Ok(Some(tracking.shorten().to_string()));
+        return Ok(upstream_ref.map(|r| r.shorten().to_string()));
     }
     if spec.contains("@{") {
         // Reflog (@{N}), push (@{push}), previous-checkout (@{-N}) etc. are not

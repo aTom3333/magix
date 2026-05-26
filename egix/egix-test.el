@@ -150,6 +150,17 @@ error are both fine — both let the dispatcher fall back to git)."
         ;; A branch with no upstream still returns nil
         (should-not (egix-revparse-abbrev-ref repo "no-upstream-branch@{upstream}"))))))
 
+(ert-deftest egix-test-revparse-abbrev-ref-local-upstream ()
+  "BRANCH@{upstream} resolves when the upstream is a local branch (remote=`.')."
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git branch tracks-local")
+    (egix-test--shell "git branch --set-upstream-to=test-branch tracks-local")
+    (let ((repo (egix-repo-discover default-directory)))
+      (should (string= (egix-revparse-abbrev-ref repo "tracks-local@{upstream}")
+                       "test-branch"))
+      (should (string= (egix-revparse-abbrev-ref repo "tracks-local@{u}")
+                       "test-branch")))))
+
 (ert-deftest egix-test-symbolic-ref ()
   "Test egix-symbolic-ref / egix-symbolic-ref-short on a symbolic reference."
   (egix-test--with-test-repo

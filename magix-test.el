@@ -14,6 +14,12 @@
 (require 'ert)
 (require 'egix-test-helpers)
 
+;; Tests must never touch the user's real magix stats file. Point the global
+;; default at a sandbox file under temporary-file-directory; the save/load
+;; tests still let-bind their own temp files on top.
+(setq magix-stats-file
+      (expand-file-name "magix-test-stats.eld" temporary-file-directory))
+
 ;; (unless (featurep 'magit)
 ;;   ;; Setup package archives and install magit if needed
 ;;   (require 'package)
@@ -295,41 +301,203 @@ subdirectory."
                  "log --format=%h %s <arg>")))
 
 (ert-deftest magix-test-stats-records-invocations ()
-  "When `magix-record-stats' is on, every git call lands in `magix--stats-log'
-with the right intercept flag."
+  "When `magix-record-stats' is on, every git call lands in `magix--stats'
+with the right intercept flag and a positive duration."
   (skip-unless (featurep 'egix-module))
   (should magix-mode)
   (egix-test--with-test-repo
     (let ((magix-record-stats t)
-          (magix--stats-log nil))
+          (magix--stats (make-hash-table :test 'equal)))
       ;; Intercepted: rev-parse --show-toplevel is in the dispatcher.
       (magit-toplevel)
-      (should magix--stats-log)
-      (let ((rec (car (last magix--stats-log))))
-        (should (equal (plist-get rec :args) '("rev-parse" "--show-toplevel")))
-        (should (eq (plist-get rec :intercepted) t))
-        (should (floatp (plist-get rec :duration))))
+      (let* ((sig (magix--stats-signature '("rev-parse" "--show-toplevel")))
+             (cell (gethash sig magix--stats)))
+        (should cell)
+        (should (= 1 (aref cell 0)))
+        (should (= 1 (aref cell 1)))
+        (should (floatp (aref cell 2))))
       ;; Non-intercepted: status -z --porcelain is deliberately not handled.
-      (setq magix--stats-log nil)
       (magit-git-string "status" "-z" "--porcelain")
-      (should magix--stats-log)
-      (should (eq (plist-get (car magix--stats-log) :intercepted) nil)))))
+      (let* ((sig (magix--stats-signature '("status" "-z" "--porcelain")))
+             (cell (gethash sig magix--stats)))
+        (should cell)
+        (should (= 1 (aref cell 0)))
+        (should (= 0 (aref cell 1)))))))
 
 (ert-deftest magix-test-stats-not-recorded-when-off ()
-  "With `magix-record-stats' nil, the log stays empty."
+  "With `magix-record-stats' nil, the hash stays empty."
   (skip-unless (featurep 'egix-module))
   (should magix-mode)
   (egix-test--with-test-repo
     (let ((magix-record-stats nil)
-          (magix--stats-log nil))
+          (magix--stats (make-hash-table :test 'equal)))
       (magit-toplevel)
-      (should-not magix--stats-log))))
+      (should (zerop (hash-table-count magix--stats))))))
 
 (ert-deftest magix-test-stats-clear ()
-  "`magix-clear-stats' empties the log."
-  (let ((magix--stats-log '((:args ("rev-parse") :intercepted t :duration 0.001))))
-    (magix-clear-stats)
-    (should-not magix--stats-log)))
+  "`magix-clear-stats' empties memory and removes the persistence file."
+  (let ((magix--stats (make-hash-table :test 'equal))
+        (magix-stats-file (make-temp-file "magix-stats-")))
+    (unwind-protect
+        (progn
+          (puthash "rev-parse" (vector 1 1 0.001 '("rev-parse")) magix--stats)
+          (magix-save-stats)
+          (should (file-exists-p magix-stats-file))
+          (puthash "rev-parse" (vector 1 1 0.001 '("rev-parse")) magix--stats)
+          (magix-clear-stats)
+          (should (zerop (hash-table-count magix--stats)))
+          (should-not (file-exists-p magix-stats-file)))
+      (when (file-exists-p magix-stats-file)
+        (delete-file magix-stats-file)))))
+
+(ert-deftest magix-test-stats-debug-mode-excludes-orig-time ()
+  "Debug-mode comparison cost should NOT be counted in the recorded duration.
+The slow mock orig-func sleeps 100ms; the recorded duration should be well
+under that since the orig-func portion is timed separately and subtracted."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-record-stats t)
+          (magix-debug-mode t)
+          (magix--stats (make-hash-table :test 'equal))
+          (slow-orig (lambda (_destination &rest _args)
+                       (sleep-for 0.100)
+                       (insert (magix--normalize-path egix-test-repo-path))
+                       (insert "\n")
+                       0)))
+      (magix-test--clear-debug-buffer)
+      (with-temp-buffer
+        (magix-magit-process-git slow-orig t "rev-parse" "--show-toplevel"))
+      (magix-test--assert-no-mismatch)
+      (let* ((sig (magix--stats-signature '("rev-parse" "--show-toplevel")))
+             (cell (gethash sig magix--stats)))
+        (should cell)
+        (should (= 1 (aref cell 0)))
+        (should (= 1 (aref cell 1)))
+        ;; The 100ms sleep must not appear in the recorded duration.
+        (should (< (aref cell 2) 0.050))))))
+
+(ert-deftest magix-test-stats-non-intercepted-includes-orig-time ()
+  "Non-intercepted calls record the full wall-clock duration — including
+the git CLI fork — so the stats can identify what's worth speeding up next."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-record-stats t)
+          (magix--stats (make-hash-table :test 'equal))
+          (slow-orig (lambda (_destination &rest _args)
+                       (sleep-for 0.100)
+                       0)))
+      (with-temp-buffer
+        ;; status -z --porcelain is deliberately not in the dispatcher
+        (magix-magit-process-git slow-orig t "status" "-z" "--porcelain"))
+      (let* ((sig (magix--stats-signature '("status" "-z" "--porcelain")))
+             (cell (gethash sig magix--stats)))
+        (should cell)
+        (should (= 1 (aref cell 0)))
+        (should (= 0 (aref cell 1)))
+        (should (>= (aref cell 2) 0.090))))))
+
+(ert-deftest magix-test-stats-save-flushes-and-clears ()
+  "`magix-save-stats' writes in-flight stats to disk and empties memory."
+  (let ((magix--stats (make-hash-table :test 'equal))
+        (magix-stats-file (make-temp-file "magix-stats-")))
+    (unwind-protect
+        (progn
+          (magix--stats-record '("rev-parse" "HEAD") t 0.002)
+          (magix--stats-record '("rev-parse" "main") t 0.003)
+          (magix--stats-record '("status" "-z") nil 0.150)
+          (magix-save-stats)
+          (should (zerop (hash-table-count magix--stats)))
+          (let* ((on-disk (magix--stats-read-file))
+                 (sig-rp (magix--stats-signature '("rev-parse" "HEAD")))
+                 (sig-st (magix--stats-signature '("status" "-z")))
+                 (cell-rp (gethash sig-rp on-disk))
+                 (cell-st (gethash sig-st on-disk)))
+            (should cell-rp)
+            (should (= 2 (aref cell-rp 0)))
+            (should (= 2 (aref cell-rp 1)))
+            (should (< (abs (- 0.005 (aref cell-rp 2))) 0.0001))
+            (should cell-st)
+            (should (= 1 (aref cell-st 0)))
+            (should (= 0 (aref cell-st 1)))
+            (should (< (abs (- 0.150 (aref cell-st 2))) 0.0001))))
+      (when (file-exists-p magix-stats-file)
+        (delete-file magix-stats-file)))))
+
+(ert-deftest magix-test-stats-save-accumulates-across-sessions ()
+  "Repeated saves are additive: each session's in-flight delta is merged
+into the on-disk total, never replacing it."
+  (let ((magix--stats (make-hash-table :test 'equal))
+        (magix-stats-file (make-temp-file "magix-stats-")))
+    (unwind-protect
+        (progn
+          ;; Session 1 flush: file has count=1.
+          (magix--stats-record '("rev-parse" "HEAD") t 0.002)
+          (magix-save-stats)
+          ;; Session 2: nothing in memory from session 1 (save cleared it),
+          ;; record one more then flush — file should reach count=2.
+          (magix--stats-record '("rev-parse" "HEAD") t 0.003)
+          (magix-save-stats)
+          (let* ((on-disk (magix--stats-read-file))
+                 (sig (magix--stats-signature '("rev-parse" "HEAD")))
+                 (cell (gethash sig on-disk)))
+            (should cell)
+            (should (= 2 (aref cell 0)))
+            (should (= 2 (aref cell 1)))
+            (should (< (abs (- 0.005 (aref cell 2))) 0.0001))))
+      (when (file-exists-p magix-stats-file)
+        (delete-file magix-stats-file)))))
+
+(ert-deftest magix-test-stats-save-noop-when-empty ()
+  "`magix-save-stats' must not touch the file when memory is empty —
+otherwise the timer firing on an idle Emacs would clobber a sibling
+instance that just wrote fresh data."
+  (let ((magix--stats (make-hash-table :test 'equal))
+        (magix-stats-file (expand-file-name "magix-stats-noop.eld"
+                                            temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (when (file-exists-p magix-stats-file)
+            (delete-file magix-stats-file))
+          (magix-save-stats)
+          (should-not (file-exists-p magix-stats-file)))
+      (when (file-exists-p magix-stats-file)
+        (delete-file magix-stats-file)))))
+
+(ert-deftest magix-test-stats-read-file-missing-is-empty ()
+  "`magix--stats-read-file' returns an empty hash when no file exists."
+  (let ((magix-stats-file (expand-file-name "magix-stats-does-not-exist.eld"
+                                            temporary-file-directory)))
+    (when (file-exists-p magix-stats-file)
+      (delete-file magix-stats-file))
+    (let ((h (magix--stats-read-file)))
+      (should (hash-table-p h))
+      (should (zerop (hash-table-count h))))))
+
+(ert-deftest magix-test-stats-merge-into ()
+  "`magix--stats-merge-into' sums shared keys and copies novel ones."
+  (let ((target (make-hash-table :test 'equal))
+        (source (make-hash-table :test 'equal)))
+    (puthash "a" (vector 1 1 0.10 '("a")) target)
+    (puthash "a" (vector 2 0 0.20 '("a")) source)
+    (puthash "b" (vector 5 3 0.50 '("b")) source)
+    (magix--stats-merge-into target source)
+    ;; Shared key: counts added.
+    (let ((a (gethash "a" target)))
+      (should (= 3 (aref a 0)))
+      (should (= 1 (aref a 1)))
+      (should (< (abs (- 0.30 (aref a 2))) 0.0001)))
+    ;; Novel key: copied verbatim.
+    (let ((b (gethash "b" target)))
+      (should (= 5 (aref b 0)))
+      (should (= 3 (aref b 1)))
+      (should (< (abs (- 0.50 (aref b 2))) 0.0001)))
+    ;; Mutating the merged cell must not corrupt the source (copy-sequence).
+    (let ((b-target (gethash "b" target))
+          (b-source (gethash "b" source)))
+      (aset b-target 0 999)
+      (should (= 5 (aref b-source 0))))))
 
 (ert-deftest magix-test-mode-toggle ()
   "Test that magix-mode can be toggled on and off."

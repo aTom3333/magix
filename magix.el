@@ -38,19 +38,45 @@ Each entry should be an absolute path to a repository root directory."
 
 (defcustom magix-record-stats nil
   "When non-nil, record every git invocation seen by the magix advice.
-Records are kept in `magix--stats-log' and can be inspected with
-`magix-dump-stats' or reset with `magix-clear-stats'."
+In-flight stats accumulate in `magix--stats'; they are periodically flushed
+to `magix-stats-file' (and on Emacs exit) by `magix-save-stats', which
+also clears the in-memory hash. Inspect aggregated history with
+`magix-dump-stats' or wipe everything with `magix-clear-stats'.
+When `magix-debug-mode' is also on, the time spent running git for
+comparison is excluded from the recorded duration."
   :type 'boolean
+  :group 'magix)
+
+(defcustom magix-stats-file (locate-user-emacs-file "magix-stats.eld")
+  "File where magix persists accumulated stats across sessions.
+This file is the canonical store. Each Emacs session keeps only the data
+collected since its last save in memory; on save, the file is read,
+merged with the in-flight data, written back, and the in-memory hash is
+cleared. This narrows the race window when multiple Emacs instances
+write concurrently."
+  :type 'file
+  :group 'magix)
+
+(defcustom magix-stats-save-interval 60
+  "Seconds between automatic flushes of in-flight stats to `magix-stats-file'.
+The timer is started when `magix-mode' is enabled and stopped when it
+is disabled. A flush is a no-op when nothing has been recorded since
+the previous save."
+  :type 'integer
   :group 'magix)
 
 (defvar magix--advised-functions nil
   "List of functions that have been successfully advised.")
 
-(defvar magix--stats-log nil
-  "List of recorded git invocations, most recent first.
-Each entry is a plist with keys :args (list of strings),
-:intercepted (boolean — whether magix served the answer itself),
-and :duration (seconds, float).")
+(defvar magix--stats (make-hash-table :test 'equal)
+  "In-flight git invocation stats, keyed by signature string.
+Each value is a vector [count intercepted-count total-duration example-args].
+Only holds data collected since the last save; the canonical accumulated
+history lives in `magix-stats-file'.")
+
+(defvar magix--stats-save-timer nil
+  "Repeating timer that periodically flushes `magix--stats' to disk.
+Managed by `magix-mode'.")
 
 (defun magix--normalize-path (path)
   "Canonicalize PATH (resolve symlinks/`..', uppercase Windows drive letter)."
@@ -211,6 +237,7 @@ in magit (all wrappers funnel through here)."
                           (magix--git-output-dispatch flat-args)))
          (writes-current (magix--destination-is-current-buffer-p destination))
          (intercepted (and dispatched writes-current))
+         (debug-orig-duration 0.0)
          (result
           (cond
            ;; Not handled, or unfamiliar destination shape — pass through.
@@ -218,12 +245,17 @@ in magit (all wrappers funnel through here)."
             (apply orig-func destination args))
            ;; Debug-mode: run git for real, capture what it inserted, compare.
            (magix-debug-mode
-            (let ((before (point))
-                  (magix-bytes (or (car dispatched) ""))
-                  (magix-exit (if (car dispatched) 0 1))
-                  orig-exit orig-bytes)
-              (setq orig-exit (apply orig-func destination args))
-              (setq orig-bytes (buffer-substring-no-properties before (point)))
+            (let* ((before (point))
+                   (magix-bytes (or (car dispatched) ""))
+                   (magix-exit (if (car dispatched) 0 1))
+                   ;; Time orig-func separately so it can be excluded from
+                   ;; the stats duration — debug-mode comparison cost is not
+                   ;; the operation's real cost.
+                   (orig-start (and start (current-time)))
+                   (orig-exit (apply orig-func destination args))
+                   (orig-bytes (buffer-substring-no-properties before (point))))
+              (when orig-start
+                (setq debug-orig-duration (float-time (time-since orig-start))))
               (unless (and (equal magix-bytes orig-bytes)
                            (eq (zerop magix-exit) (zerop orig-exit)))
                 (magix--log-mismatch 'magit-process-git (list :args flat-args)
@@ -236,14 +268,10 @@ in magit (all wrappers funnel through here)."
            (t (insert (car dispatched)) 0))))
     (when start
       (magix--stats-record flat-args (and intercepted t)
-                            (float-time (time-since start))))
+                            (- (float-time (time-since start))
+                               debug-orig-duration)))
     result))
 
-
-(defun magix--stats-record (args intercepted duration)
-  "Push a stats record onto `magix--stats-log'."
-  (push (list :args args :intercepted intercepted :duration duration)
-        magix--stats-log))
 
 (defun magix--stats-signature (args)
   "Return a normalized signature string for ARGS.
@@ -260,72 +288,164 @@ aggregate together."
                   (t (format "%S" a))))
                args " ")))
 
-(defun magix-clear-stats ()
-  "Discard all recorded git invocation stats."
+(defun magix--stats-record (args intercepted duration)
+  "Aggregate one git invocation into `magix--stats'."
+  (let* ((sig (magix--stats-signature args))
+         (cell (gethash sig magix--stats)))
+    (unless cell
+      (setq cell (vector 0 0 0.0 args))
+      (puthash sig cell magix--stats))
+    (aset cell 0 (1+ (aref cell 0)))
+    (when intercepted (aset cell 1 (1+ (aref cell 1))))
+    (aset cell 2 (+ (aref cell 2) duration))))
+
+(defun magix--stats-read-file ()
+  "Return a fresh hash table built from `magix-stats-file'.
+Empty hash if the file does not exist, is empty, or fails to parse."
+  (let ((h (make-hash-table :test 'equal)))
+    (when (and (file-exists-p magix-stats-file)
+               (> (file-attribute-size (file-attributes magix-stats-file)) 0))
+      (condition-case err
+          (let ((entries (with-temp-buffer
+                           (insert-file-contents magix-stats-file)
+                           (goto-char (point-min))
+                           (read (current-buffer)))))
+            (dolist (entry entries)
+              (let* ((sig (car entry))
+                     (plist (cdr entry))
+                     (count (or (plist-get plist :count) 0))
+                     (interc (or (plist-get plist :intercepted) 0))
+                     (total (or (plist-get plist :total) 0.0))
+                     (example (plist-get plist :example)))
+                (puthash sig (vector count interc total example) h))))
+        (error
+         (message "Magix: failed to read stats from %s: %s"
+                  magix-stats-file (error-message-string err)))))
+    h))
+
+(defun magix--stats-merge-into (target source)
+  "Add every cell in SOURCE hash to TARGET hash. Mutates TARGET."
+  (maphash
+   (lambda (sig src-cell)
+     (let ((dst-cell (gethash sig target)))
+       (if dst-cell
+           (progn
+             (aset dst-cell 0 (+ (aref dst-cell 0) (aref src-cell 0)))
+             (aset dst-cell 1 (+ (aref dst-cell 1) (aref src-cell 1)))
+             (aset dst-cell 2 (+ (aref dst-cell 2) (aref src-cell 2))))
+         (puthash sig (copy-sequence src-cell) target))))
+   source))
+
+(defun magix--stats-write-file (table)
+  "Persist hash TABLE to `magix-stats-file'."
+  (let (entries)
+    (maphash (lambda (sig cell)
+               (push (list sig
+                           :count (aref cell 0)
+                           :intercepted (aref cell 1)
+                           :total (aref cell 2)
+                           :example (aref cell 3))
+                     entries))
+             table)
+    (with-temp-file magix-stats-file
+      (let ((print-length nil)
+            (print-level nil))
+        (prin1 entries (current-buffer))
+        (insert "\n")))))
+
+(defun magix-save-stats ()
+  "Flush in-flight stats to `magix-stats-file', then clear them from memory.
+Reads the file, additively merges `magix--stats' into it, writes it back,
+and resets `magix--stats'. No-op when nothing has been recorded since the
+last save.
+
+Concurrent Emacs instances each hold only their since-last-save data, so
+on a save each only contributes its own delta to the file. A race is still
+possible between a read and a write here, but the window is narrow."
   (interactive)
-  (setq magix--stats-log nil)
+  (when (> (hash-table-count magix--stats) 0)
+    (let ((merged (magix--stats-read-file)))
+      (magix--stats-merge-into merged magix--stats)
+      (magix--stats-write-file merged)
+      (clrhash magix--stats))))
+
+(defun magix--save-stats-on-exit ()
+  "Persist any in-flight stats from `kill-emacs-hook'."
+  (ignore-errors (magix-save-stats)))
+
+(defun magix--stats-start-timer ()
+  "Start the periodic save timer if it is not already running."
+  (unless magix--stats-save-timer
+    (setq magix--stats-save-timer
+          (run-at-time magix-stats-save-interval
+                       magix-stats-save-interval
+                       #'magix-save-stats))))
+
+(defun magix--stats-stop-timer ()
+  "Cancel the periodic save timer if running."
+  (when magix--stats-save-timer
+    (cancel-timer magix--stats-save-timer)
+    (setq magix--stats-save-timer nil)))
+
+(defun magix-clear-stats ()
+  "Discard all accumulated stats, both in memory and on disk.
+Empties `magix--stats' and deletes `magix-stats-file' if it exists."
+  (interactive)
+  (clrhash magix--stats)
+  (when (file-exists-p magix-stats-file)
+    (delete-file magix-stats-file))
   (message "Magix stats cleared"))
 
 (defun magix-dump-stats ()
-  "Display aggregated stats for recorded git invocations.
-Calls are grouped by a normalized signature (flags kept, ref/path
-arguments masked as `<arg>'), then sorted by total time spent so the
-top rows are the highest-value candidates to consider for interception."
+  "Display aggregated stats sorted by total time spent.
+Shows the combined view of `magix-stats-file' plus any in-flight data
+not yet saved. Rows are signatures (flags kept, ref/path arguments
+masked as `<arg>') so calls differing only by ref aggregate together;
+the top rows are the highest-value candidates to consider for
+interception."
   (interactive)
-  (let ((records magix--stats-log)
-        (groups (make-hash-table :test 'equal)))
-    (dolist (rec records)
-      (let* ((args (plist-get rec :args))
-             (intercepted (plist-get rec :intercepted))
-             (duration (plist-get rec :duration))
-             (sig (magix--stats-signature args))
-             (cell (gethash sig groups)))
-        ;; cell = [count intercepted-count total-duration example-args]
-        (unless cell
-          (setq cell (vector 0 0 0.0 args))
-          (puthash sig cell groups))
-        (aset cell 0 (1+ (aref cell 0)))
-        (when intercepted (aset cell 1 (1+ (aref cell 1))))
-        (aset cell 2 (+ (aref cell 2) duration))))
-    (let (rows
-          (total-count (length records))
-          (total-time 0.0)
-          (total-intercepted 0))
-      (dolist (rec records)
-        (setq total-time (+ total-time (plist-get rec :duration)))
-        (when (plist-get rec :intercepted)
-          (setq total-intercepted (1+ total-intercepted))))
-      (maphash (lambda (sig cell) (push (cons sig cell) rows)) groups)
-      (setq rows (sort rows (lambda (a b)
-                              (> (aref (cdr a) 2) (aref (cdr b) 2)))))
-      (with-current-buffer (get-buffer-create "*magix-stats*")
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (format "Magix git-invocation stats — %d calls, %.3fs total, %d intercepted (%.1f%%)\n\n"
-                          total-count total-time total-intercepted
-                          (if (zerop total-count) 0.0
-                            (/ (* 100.0 total-intercepted) total-count))))
-          (insert (format "%7s %8s %10s %10s  %s\n"
-                          "Count" "Interc.%" "Total(s)" "Mean(ms)" "Signature  [example]"))
-          (insert (make-string 78 ?-)) (insert "\n")
-          (dolist (row rows)
-            (let* ((sig (car row))
-                   (cell (cdr row))
-                   (count (aref cell 0))
-                   (interc (aref cell 1))
-                   (total (aref cell 2))
-                   (example (aref cell 3)))
-              (insert (format "%7d %7.1f%% %10.3f %10.2f  %s\n"
-                              count
-                              (/ (* 100.0 interc) count)
-                              total
-                              (* 1000.0 (/ total count))
-                              sig))
-              (when (not (equal sig (mapconcat #'identity example " ")))
-                (insert (format "%41s  [%s]\n" "" (mapconcat #'identity example " "))))))
-          (goto-char (point-min))
-          (special-mode)))
-      (display-buffer "*magix-stats*"))))
+  (let ((view (magix--stats-read-file))
+        rows
+        (total-count 0)
+        (total-time 0.0)
+        (total-intercepted 0))
+    (magix--stats-merge-into view magix--stats)
+    (maphash (lambda (sig cell)
+               (push (cons sig cell) rows)
+               (setq total-count (+ total-count (aref cell 0))
+                     total-intercepted (+ total-intercepted (aref cell 1))
+                     total-time (+ total-time (aref cell 2))))
+             view)
+    (setq rows (sort rows (lambda (a b)
+                            (> (aref (cdr a) 2) (aref (cdr b) 2)))))
+    (with-current-buffer (get-buffer-create "*magix-stats*")
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Magix git-invocation stats — %d calls, %.3fs total, %d intercepted (%.1f%%)\n\n"
+                        total-count total-time total-intercepted
+                        (if (zerop total-count) 0.0
+                          (/ (* 100.0 total-intercepted) total-count))))
+        (insert (format "%7s %8s %10s %10s  %s\n"
+                        "Count" "Interc.%" "Total(s)" "Mean(ms)" "Signature  [example]"))
+        (insert (make-string 78 ?-)) (insert "\n")
+        (dolist (row rows)
+          (let* ((sig (car row))
+                 (cell (cdr row))
+                 (count (aref cell 0))
+                 (interc (aref cell 1))
+                 (total (aref cell 2))
+                 (example (aref cell 3)))
+            (insert (format "%7d %7.1f%% %10.3f %10.2f  %s\n"
+                            count
+                            (/ (* 100.0 interc) count)
+                            total
+                            (* 1000.0 (/ total count))
+                            sig))
+            (when (not (equal sig (mapconcat #'identity example " ")))
+              (insert (format "%41s  [%s]\n" "" (mapconcat #'identity example " "))))))
+        (goto-char (point-min))
+        (special-mode)))
+    (display-buffer "*magix-stats*")))
 
 (define-minor-mode magix-mode
   "Toggle gitoxide-powered Magit acceleration.
@@ -340,14 +460,17 @@ gitoxide implementation instead of calling Git CLI commands."
         ;; Ensure egix is loaded
         (unless (featurep 'egix-module)
           (egix-load-module))
-        
+
         ;; Add around advice to Magit functions with signature checking
         (setq magix--advised-functions nil)
-        
+
         (when (magix--check-function-signature 'magit-process-git '(destination &rest args))
           (advice-add 'magit-process-git :around #'magix-magit-process-git)
           (push 'magit-process-git magix--advised-functions))
-        
+
+        (add-hook 'kill-emacs-hook #'magix--save-stats-on-exit)
+        (magix--stats-start-timer)
+
         (if magix--advised-functions
             (message "Magix acceleration enabled (%d functions advised)"
                      (length magix--advised-functions))
@@ -356,6 +479,9 @@ gitoxide implementation instead of calling Git CLI commands."
     (dolist (func magix--advised-functions)
       (advice-remove func (intern (format "magix-%s" func))))
     (setq magix--advised-functions nil)
+    (magix--stats-stop-timer)
+    (magix--save-stats-on-exit)
+    (remove-hook 'kill-emacs-hook #'magix--save-stats-on-exit)
     (message "Magix acceleration disabled")))
 
 (provide 'magix)

@@ -66,6 +66,13 @@ the previous save."
   :type 'integer
   :group 'magix)
 
+(defvar magix-strict-dispatch nil
+  "When non-nil, the dispatcher only swallows `rust-error' signals from egix.
+Other elisp errors raised inside a dispatcher arm (for instance
+`wrong-number-of-arguments' from a mis-shaped egix call) propagate to
+the caller. When nil, all errors are swallowed and the call falls back
+to the git CLI.")
+
 (defvar magix--advised-functions nil
   "List of functions that have been successfully advised.")
 
@@ -184,10 +191,11 @@ discovered, current directory is inside the gitdir, or BODY signalled an error
 (typically because the underlying gix function does not implement this revspec
 shape). Callers should fall back to the git CLI."
   (declare (indent 0))
-  `(condition-case nil
+  `(condition-case err
        (when-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
          (list (progn ,@body)))
-     (error nil)))
+     (rust-error nil)
+     (error (if magix-strict-dispatch (signal (car err) (cdr err)) nil))))
 
 (defmacro magix--line (form)
   "Evaluate FORM; if it yields a non-nil string, append a trailing newline.

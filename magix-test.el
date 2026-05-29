@@ -20,6 +20,11 @@
 (setq magix-stats-file
       (expand-file-name "magix-test-stats.eld" temporary-file-directory))
 
+;; Run the dispatcher in strict mode: non-`rust-error' elisp errors raised
+;; inside an arm body propagate instead of silently falling back to git,
+;; so arm bugs (wrong egix arg count, etc.) surface as test failures.
+(setq magix-strict-dispatch t)
+
 ;; (unless (featurep 'magit)
 ;;   ;; Setup package archives and install magit if needed
 ;;   (require 'package)

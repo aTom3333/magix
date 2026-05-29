@@ -517,6 +517,120 @@ instance that just wrote fresh data."
   (should magix-mode)
   (should magix--advised-functions))
 
+;;; Config interception
+
+(defun magix-test--git (&rest args)
+  "Run git with ARGS via call-process to bypass shell quoting.
+Set up so values with `*' or other shell-special characters reach git
+verbatim on Windows cmd as well as POSIX shells."
+  (apply #'call-process "git" nil nil nil args))
+
+(ert-deftest magix-test-magit-config-get-all-include ()
+  "magit-get-all exercises the `config -z --get-all --include KEY' arm.
+Covers single-value, multi-value, missing, and subsection-with-slash."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (magix-test--git "config" "core.abbrev" "7")
+    (magix-test--git "config" "--add" "remote.origin.fetch"
+                     "+refs/heads/*:refs/remotes/origin/*")
+    (magix-test--git "config" "--add" "remote.origin.fetch"
+                     "+refs/tags/*:refs/tags/*")
+    (magix-test--git "config" "branch.Feature/X.pushRemote" "origin")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (should (equal (magit-get-all "core.abbrev") '("7")))
+      (should (equal (magit-get-all "remote.origin.fetch")
+                     '("+refs/heads/*:refs/remotes/origin/*"
+                       "+refs/tags/*:refs/tags/*")))
+      (should (equal (magit-get-all "branch.Feature/X.pushRemote") '("origin")))
+      (should (null (magit-get-all "does.not.exist")))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-config-get-all-include-local ()
+  "magit-get-all with `--local' exercises the local-scope arm."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (magix-test--git "config" "status.showUntrackedFiles" "all")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (should (equal (magit-get-all "--local" "status.showUntrackedFiles") '("all")))
+      (should (null (magit-get-all "--local" "missing.key")))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-config-list-z ()
+  "magit-git-items \"config\" \"--list\" \"-z\" exercises the `--list -z' arm."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (magix-test--git "config" "core.abbrev" "7")
+    (magix-test--git "config" "--add" "remote.origin.fetch"
+                     "+refs/heads/*:refs/remotes/origin/*")
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      (let ((items (magit-git-items "config" "--list" "-z")))
+        (should (listp items))
+        (should (seq-find (lambda (s) (string-match-p "\\`core\\.abbrev\n7\\'" s)) items))
+        (should (seq-find (lambda (s)
+                            (string-match-p "\\`remote\\.origin\\.fetch\n\\+refs/heads/\\*"
+                                            s))
+                          items)))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-config-global-scope-filter ()
+  "`config --global KEY' must NOT see a key set only in local scope.
+Verifies scope filtering without needing HOME isolation (which doesn't
+reliably propagate to the in-process gitoxide on Windows). Both the
+git CLI and magix should return nil here; debug-mode asserts parity."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    ;; A name very unlikely to exist in the user's real global config.
+    (magix-test--git "config" "magix.test.local.only" "from-local")
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      (should (null (magit-git-string "config" "--global" "magix.test.local.only")))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-config-default ()
+  "magit-git-string \"config\" \"--default=X\" KEY exercises the default-arg arm."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      ;; magix.no.such is unset; the default _ should win.
+      (should (equal (magit-git-string "config" "--default=_" "magix.no.such") "_"))
+      ;; Set it and verify the real value wins over the default.
+      (magix-test--git "config" "magix.no.such" "found")
+      (should (equal (magit-git-string "config" "--default=_" "magix.no.such") "found"))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-config-include-directive ()
+  "Reads of an included file's keys go through gitoxide's include processing.
+Verifies parity with git when `[include]' is present in the local config."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let* ((included (expand-file-name "extra-config" egix-test-repo-path))
+           (local-config (expand-file-name ".git/config" egix-test-repo-path)))
+      (with-temp-file included
+        (insert "[core]\n\tabbrev = 9\n"))
+      ;; Append an [include] section to .git/config so the dispatcher sees it.
+      (with-temp-buffer
+        (insert-file-contents local-config)
+        (goto-char (point-max))
+        (insert (format "[include]\n\tpath = %s\n" included))
+        (write-region (point-min) (point-max) local-config))
+      (let ((magix-debug-mode t)
+            (magit--refresh-cache nil))
+        (magix-test--clear-debug-buffer)
+        (should (equal (magit-get-all "core.abbrev") '("9")))
+        (magix-test--assert-no-mismatch)))))
+
 (provide 'magix-test)
 
 ;;; magix-test.el ends here

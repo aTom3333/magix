@@ -16,6 +16,7 @@
 (add-to-list 'load-path 
   (expand-file-name "egix" (file-name-directory (or load-file-name buffer-file-name))))
 
+(require 'cl-lib)
 (require 'magit)
 (require 'egix)
 
@@ -193,6 +194,63 @@ shape). Callers should fall back to the git CLI."
 Helper for dispatcher arms that produce single-line git output."
   `(let ((v ,form)) (and v (concat v "\n"))))
 
+(defun magix--format-config-get-all-z (values)
+  "Format VALUES as git's `-z --get-all KEY' output: VALUE\\0 per entry.
+Returns nil when VALUES is empty so the dispatcher emits exit 1."
+  (and values
+       (mapconcat (lambda (v) (concat v "\0")) values "")))
+
+(defun magix--format-config-list-z (alist)
+  "Format ALIST as git's `-z --list' output: KEY\\nVAL\\0 per entry.
+ALIST is a list of (KEY . VALUE) cons cells. Returns nil if empty."
+  (and alist
+       (mapconcat (lambda (pair) (concat (car pair) "\n" (cdr pair) "\0"))
+                  alist "")))
+
+(defun magix--config-normalize-c-key (raw-key)
+  "Apply git's casing rule to RAW-KEY: lowercase section + variable,
+preserve subsection case. Returns nil for malformed keys."
+  (let ((first-dot (string-search "." raw-key))
+        (last-dot (cl-position ?. raw-key :from-end t)))
+    (when (and first-dot
+               (> first-dot 0)
+               (< last-dot (1- (length raw-key))))
+      (let ((section (downcase (substring raw-key 0 first-dot)))
+            (variable (downcase (substring raw-key (1+ last-dot)))))
+        (if (= first-dot last-dot)
+            (concat section "." variable)
+          (concat section "."
+                  (substring raw-key (1+ first-dot) last-dot)
+                  "." variable))))))
+
+(defun magix--config-c-overrides (args)
+  "Extract `-c KEY=VAL' overrides from ARGS as an alist in declared order.
+Mirrors git's `--list' casing (section + variable lowercased, subsection
+verbatim) so the overrides slot in cleanly behind the file-based entries."
+  (let (result)
+    (while args
+      (when (and (equal (car args) "-c") (cdr args))
+        (let* ((entry (cadr args))
+               (eq-pos (string-search "=" entry)))
+          (when (and eq-pos (> eq-pos 0))
+            (when-let ((key (magix--config-normalize-c-key
+                             (substring entry 0 eq-pos))))
+              (push (cons key (substring entry (1+ eq-pos))) result)))))
+      (setq args (cdr args)))
+    (nreverse result)))
+
+(defun magix--config-get-single (key scope default)
+  "Dispatch result for the single-value `git config KEY' form.
+SCOPE is \"local\", \"global\", \"system\", or nil for all scopes.
+DEFAULT, when non-nil, is the string returned if KEY is unset (mirrors
+`--default='); when nil, an unset KEY produces git's exit-1-no-output."
+  (magix--with-repo
+    (let ((value (egix-config-get repo key scope)))
+      (cond
+       (value (concat value "\n"))
+       (default (concat default "\n"))
+       (t nil)))))
+
 (defun magix--git-output-dispatch (args)
   "Return raw git output for ARGS using egix, or nil if not handled.
 
@@ -220,6 +278,22 @@ result. nil means \"fall back to git\"."
      (magix--with-repo (magix--line (egix-symbolic-ref-short repo ref))))
     (`("symbolic-ref" ,(and ref (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-symbolic-ref repo ref))))
+    (`("config" "-z" "--get-all" "--include" ,(and key (pred magix--not-option-p)))
+     (magix--with-repo
+       (magix--format-config-get-all-z (egix-config-get-all repo key nil))))
+    (`("config" "--local" "-z" "--get-all" "--include" ,(and key (pred magix--not-option-p)))
+     (magix--with-repo
+       (magix--format-config-get-all-z (egix-config-get-all repo key "local"))))
+    (`("config" "--list" "-z")
+     (magix--with-repo
+       (magix--format-config-list-z
+        (append (egix-config-list repo nil)
+                (magix--config-c-overrides magit-git-global-arguments)))))
+    (`("config" "--global" ,(and key (pred magix--not-option-p)))
+     (magix--config-get-single key "global" nil))
+    (`("config" ,(and arg (guard (string-prefix-p "--default=" arg)))
+                ,(and key (pred magix--not-option-p)))
+     (magix--config-get-single key nil (substring arg (length "--default="))))
     (_ nil)))
 
 (defun magix--destination-is-current-buffer-p (destination)

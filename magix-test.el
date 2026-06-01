@@ -247,6 +247,36 @@ dispatcher's `(\"rev-parse\" \"--short=N\" REF)' arm."
         (magit-rev-abbrev "HEAD"))
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-ref-fullname ()
+  "Test that `magit-ref-fullname' works with the magix --verify
+--symbolic-full-name override across the common ref shapes."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      (magit-ref-fullname "test-branch")
+      (magit-ref-fullname "refs/heads/test-branch")
+      (magit-ref-fullname "HEAD")
+      (magit-ref-fullname "no-such-branch")
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-ref-fullname-upstream ()
+  "Test that `magit-ref-fullname' works for BRANCH@{upstream} / @{u}, and
+falls through correctly for unsupported `@{…}' shapes."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (egix-test--with-upstream-remote
+      (let ((magix-debug-mode t))
+        (magix-test--clear-debug-buffer)
+        (magit-ref-fullname "test-branch@{upstream}")
+        (magit-ref-fullname "test-branch@{u}")
+        (magit-ref-fullname "no-upstream-branch@{upstream}")
+        (magit-ref-fullname "HEAD@{1}")
+        (magit-ref-fullname "test-branch@{push}")
+        (magix-test--assert-no-mismatch)))))
+
 (ert-deftest magix-test-magit-gitdir ()
   "Test that `magit-gitdir' works with the magix --git-dir override across
 every gitdir shape — normal, --separate-git-dir, linked worktree, submodule

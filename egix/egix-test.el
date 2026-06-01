@@ -25,6 +25,7 @@
   (should (fboundp 'egix-revparse-single))
   (should (fboundp 'egix-revparse-short))
   (should (fboundp 'egix-revparse-abbrev-ref))
+  (should (fboundp 'egix-revparse-symbolic-full-name))
   (should (fboundp 'egix-symbolic-ref))
   (should (fboundp 'egix-symbolic-ref-short)))
 
@@ -177,6 +178,49 @@ error are both fine — both let the dispatcher fall back to git)."
                        "test-branch"))
       (should (string= (egix-revparse-abbrev-ref repo "tracks-local@{u}")
                        "test-branch")))))
+
+(ert-deftest egix-test-revparse-symbolic-full-name ()
+  "Test egix-revparse-symbolic-full-name returns full ref names."
+  (egix-test--with-test-repo
+    (let ((repo (egix-repo-discover default-directory)))
+      ;; HEAD is symbolic -> full target name (peeled one level)
+      (should (string= (egix-revparse-symbolic-full-name repo "HEAD")
+                       "refs/heads/test-branch"))
+      ;; A plain branch name -> its full form
+      (should (string= (egix-revparse-symbolic-full-name repo "test-branch")
+                       "refs/heads/test-branch"))
+      ;; Already fully qualified -> itself
+      (should (string= (egix-revparse-symbolic-full-name repo "refs/heads/test-branch")
+                       "refs/heads/test-branch"))
+      ;; Non-existent ref -> nil
+      (should-not (egix-revparse-symbolic-full-name repo "no-such-branch"))
+      ;; No upstream configured -> nil (definitive)
+      (should-not (egix-revparse-symbolic-full-name repo "test-branch@{upstream}"))
+      ;; Unsupported reflog/push shapes signal an error (caller falls back to git)
+      (should-error (egix-revparse-symbolic-full-name repo "HEAD@{1}"))
+      (should-error (egix-revparse-symbolic-full-name repo "test-branch@{push}")))))
+
+(ert-deftest egix-test-revparse-symbolic-full-name-upstream ()
+  "BRANCH@{upstream} / @{u} resolves to the tracking ref's full name."
+  (egix-test--with-fresh-test-repo
+    (egix-test--with-upstream-remote
+      (let ((repo (egix-repo-discover default-directory)))
+        (should (string= (egix-revparse-symbolic-full-name repo "test-branch@{upstream}")
+                         "refs/remotes/origin/test-branch"))
+        (should (string= (egix-revparse-symbolic-full-name repo "test-branch@{u}")
+                         "refs/remotes/origin/test-branch"))
+        (should-not (egix-revparse-symbolic-full-name repo "no-upstream-branch@{upstream}"))))))
+
+(ert-deftest egix-test-revparse-symbolic-full-name-local-upstream ()
+  "BRANCH@{upstream} resolves with a local-branch upstream (remote=`.')."
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git branch tracks-local")
+    (egix-test--shell "git branch --set-upstream-to=test-branch tracks-local")
+    (let ((repo (egix-repo-discover default-directory)))
+      (should (string= (egix-revparse-symbolic-full-name repo "tracks-local@{upstream}")
+                       "refs/heads/test-branch"))
+      (should (string= (egix-revparse-symbolic-full-name repo "tracks-local@{u}")
+                       "refs/heads/test-branch")))))
 
 (ert-deftest egix-test-symbolic-ref ()
   "Test egix-symbolic-ref / egix-symbolic-ref-short on a symbolic reference."

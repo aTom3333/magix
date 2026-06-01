@@ -130,44 +130,49 @@ fn revparse_short(
     }
 }
 
+/// Look up the upstream (`BRANCH@{upstream}` / `@{u}`) tracking ref of BRANCH
+/// and return its full name, or `None` when BRANCH does not exist or has no
+/// upstream. `remote_tracking_ref_name` does not cover the case where the
+/// upstream itself is a local branch (`branch.<name>.remote = .`); fall back
+/// to `remote_ref_name` then.
+fn upstream_full_name(
+    repo: &gix::Repository,
+    branch: &str,
+) -> Result<Option<gix::refs::FullName>> {
+    let Some(reference) = resolve_ref(repo, branch) else {
+        return Ok(None);
+    };
+    let is_local = reference
+        .remote_name(gix::remote::Direction::Fetch)
+        .map(|n| n.as_bstr() == ".")
+        .unwrap_or(false);
+    let upstream_ref = if is_local {
+        reference
+            .remote_ref_name(gix::remote::Direction::Fetch)
+            .transpose()?
+    } else {
+        reference
+            .remote_tracking_ref_name(gix::remote::Direction::Fetch)
+            .transpose()?
+    };
+    Ok(upstream_ref.map(|r| r.into_owned()))
+}
+
 /// Equivalent to `git rev-parse --verify --abbrev-ref SPEC`: the short symbolic name SPEC
 /// resolves to (e.g. branch name) or nil if SPEC is not an existing ref.
 ///
 /// Handles the common `BRANCH@{upstream}` / `BRANCH@{u}` form by looking up the branch's
 /// fetch-direction tracking ref. Other `@{...}` expressions (reflog, `@{push}`, etc.) are
-/// not implemented; nil is returned so the caller can fall back to git.
+/// not implemented; an error is signalled so the caller falls back to git.
 #[defun]
 fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     if let Some(branch) = spec
         .strip_suffix("@{upstream}")
         .or_else(|| spec.strip_suffix("@{u}"))
     {
-        let Some(reference) = resolve_ref(repo, branch) else {
-            return Ok(None);
-        };
-        // remote_tracking_ref_name doesn't handle the case where the upstream ref
-        // is a local branch, handle it by using remote_ref_name
-        let is_local = reference
-            .remote_name(gix::remote::Direction::Fetch)
-            .map(|n| n.as_bstr() == ".")
-            .unwrap_or(false);
-        let upstream_ref = if is_local {
-            reference
-                .remote_ref_name(gix::remote::Direction::Fetch)
-                .transpose()?
-        } else {
-            reference
-                .remote_tracking_ref_name(gix::remote::Direction::Fetch)
-                .transpose()?
-        };
-        return Ok(upstream_ref.map(|r| r.shorten().to_string()));
+        return Ok(upstream_full_name(repo, branch)?.map(|r| r.shorten().to_string()));
     }
     if spec.contains("@{") {
-        // Reflog (@{N}), push (@{push}), previous-checkout (@{-N}) etc. are not
-        // implemented here. Signal an error rather than returning Ok(None) so
-        // callers can distinguish "unsupported syntax" (let the caller decide
-        // what to do, typically fall back to git CLI) from a definitive
-        // "no such ref" answer (Ok(None)).
         return Err(emacs::Error::msg(format!(
             "egix-revparse-abbrev-ref: unsupported revspec `{spec}`"
         )));
@@ -175,10 +180,40 @@ fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<St
     let Some(reference) = resolve_ref(repo, spec.as_str()) else {
         return Ok(None);
     };
-    // git's --abbrev-ref follows one level of symbolic ref (e.g. HEAD -> main).
     let name = match reference.target() {
         gix::refs::TargetRef::Symbolic(target) => target.shorten().to_string(),
         gix::refs::TargetRef::Object(_) => reference.name().shorten().to_string(),
+    };
+    Ok(Some(name))
+}
+
+/// Equivalent to `git rev-parse --verify --symbolic-full-name SPEC`: the full
+/// ref name SPEC resolves to (one level of symbolic indirection followed, so
+/// `HEAD` resolves to `refs/heads/main`). Returns nil for non-existent refs.
+/// Handles `BRANCH@{upstream}` / `BRANCH@{u}`; other `@{...}` shapes signal an
+/// error so the caller falls back to git.
+#[defun]
+fn revparse_symbolic_full_name(
+    repo: &gix::Repository,
+    spec: String,
+) -> Result<Option<String>> {
+    if let Some(branch) = spec
+        .strip_suffix("@{upstream}")
+        .or_else(|| spec.strip_suffix("@{u}"))
+    {
+        return Ok(upstream_full_name(repo, branch)?.map(|r| r.as_bstr().to_string()));
+    }
+    if spec.contains("@{") {
+        return Err(emacs::Error::msg(format!(
+            "egix-revparse-symbolic-full-name: unsupported revspec `{spec}`"
+        )));
+    }
+    let Some(reference) = resolve_ref(repo, spec.as_str()) else {
+        return Ok(None);
+    };
+    let name = match reference.target() {
+        gix::refs::TargetRef::Symbolic(target) => target.as_bstr().to_string(),
+        gix::refs::TargetRef::Object(_) => reference.name().as_bstr().to_string(),
     };
     Ok(Some(name))
 }

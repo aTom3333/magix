@@ -283,6 +283,8 @@ result. nil means \"fall back to git\"."
             (magix--with-repo (magix--line (egix-revparse-short repo ref len))))))
     (`("rev-parse" "--verify" "--abbrev-ref" ,(and ref (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-revparse-abbrev-ref repo ref))))
+    (`("rev-parse" "--verify" "--symbolic-full-name" ,(and ref (pred magix--not-option-p)))
+     (magix--with-repo (magix--line (egix-revparse-symbolic-full-name repo ref))))
     (`("rev-parse" ,(and ref (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-revparse-single repo ref))))
     (`("rev-parse" "--verify" ,(and ref (pred magix--not-option-p)))

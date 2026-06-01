@@ -101,7 +101,7 @@ error are both fine — both let the dispatcher fall back to git)."
   "Test egix-revparse-short returns abbreviated object ids."
   (egix-test--with-test-repo
     (let* ((repo (egix-repo-discover default-directory))
-           (short (egix-revparse-short repo "HEAD"))
+           (short (egix-revparse-short repo "HEAD" nil))
            (full (egix-revparse-single repo "HEAD")))
       (should short)
       (should (stringp short))
@@ -114,7 +114,24 @@ error are both fine — both let the dispatcher fall back to git)."
       ;; And the short prefix must obviously match the full id
       (should (string-prefix-p short full))
       ;; Unknown spec returns nil rather than raising
-      (should-not (egix-revparse-short repo "no-such-ref-xyz")))))
+      (should-not (egix-revparse-short repo "no-such-ref-xyz" nil)))))
+
+(ert-deftest egix-test-revparse-short-with-length ()
+  "Test egix-revparse-short with an explicit minimum LENGTH."
+  (egix-test--with-test-repo
+    (let* ((repo (egix-repo-discover default-directory))
+           (full (egix-revparse-single repo "HEAD"))
+           (short4 (egix-revparse-short repo "HEAD" 4))
+           (short11 (egix-revparse-short repo "HEAD" 11)))
+      ;; LENGTH is a minimum: result has at least N chars and is a prefix of full.
+      (should (>= (length short4) 4))
+      (should (>= (length short11) 11))
+      (should (string-prefix-p short4 full))
+      (should (string-prefix-p short11 full))
+      ;; Length beyond the hash size is clamped to the full hash.
+      (should (string= (egix-revparse-short repo "HEAD" 999) full))
+      ;; Unknown spec still returns nil.
+      (should-not (egix-revparse-short repo "no-such-ref-xyz" 4)))))
 
 (ert-deftest egix-test-revparse-abbrev-ref ()
   "Test egix-revparse-abbrev-ref returns shortened ref names."

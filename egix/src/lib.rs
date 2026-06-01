@@ -103,14 +103,31 @@ fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String
     Ok(Some(id.to_string()))
 }
 
-/// Equivalent to `git rev-parse --short SPEC`. Returns nil if SPEC cannot resolve.
+/// Equivalent to `git rev-parse --short[=LENGTH] SPEC`. LENGTH is the minimum
+/// abbreviation width; nil uses git's configured default. Returns nil if SPEC
+/// cannot resolve.
 #[defun]
-fn revparse_short(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
+fn revparse_short(
+    repo: &gix::Repository,
+    spec: String,
+    length: Option<usize>,
+) -> Result<Option<String>> {
     reject_reflog_revspec("egix-revparse-short", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
         return Ok(None);
     };
-    Ok(Some(id.shorten_or_id().to_string()))
+    match length {
+        None => Ok(Some(id.shorten_or_id().to_string())),
+        Some(n) => {
+            use gix::odb::store::prefix::disambiguate::Candidate;
+            let n = n.min(repo.object_hash().len_in_hex());
+            let candidate = Candidate::new(id.detach(), n)?;
+            Ok(repo
+                .objects
+                .disambiguate_prefix(candidate)?
+                .map(|p| p.to_string()))
+        }
+    }
 }
 
 /// Equivalent to `git rev-parse --verify --abbrev-ref SPEC`: the short symbolic name SPEC

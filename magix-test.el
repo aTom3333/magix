@@ -229,6 +229,24 @@ falls through correctly for unsupported `@{…}' shapes."
         (magit-ref-abbrev "test-branch@{push}")
         (magix-test--assert-no-mismatch)))))
 
+(ert-deftest magix-test-magit-rev-abbrev ()
+  "Test that `magit-rev-abbrev' works with the magix --short=N override.
+`magit-rev-abbrev' builds `--short=N' via `magit-abbrev-arg', exercising the
+dispatcher's `(\"rev-parse\" \"--short=N\" REF)' arm."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      (magit-rev-abbrev "HEAD")
+      (magit-rev-abbrev "test-branch")
+      ;; And with an explicit core.abbrev so the arm sees several lengths.
+      (dolist (n '("4" "7" "11" "20"))
+        (let ((default-directory egix-test-repo-path))
+          (shell-command (format "git config core.abbrev %s" n)))
+        (magit-rev-abbrev "HEAD"))
+      (magix-test--assert-no-mismatch))))
+
 (ert-deftest magix-test-magit-gitdir ()
   "Test that `magit-gitdir' works with the magix --git-dir override across
 every gitdir shape — normal, --separate-git-dir, linked worktree, submodule

@@ -38,6 +38,19 @@
       ;; Repo should be a user-ptr object
       (should (user-ptrp repo)))))
 
+(ert-deftest egix-test-repo-discover-suppress-home ()
+  "egix-repo-discover with SUPPRESS-HOME opens the repo and restores HOME.
+The suppressed config behaviour itself is platform-dependent (it only changes
+which global config gix reads), so this only asserts the open still succeeds
+and that the process HOME is left untouched afterwards."
+  (egix-test--with-test-repo
+    (let ((home-before (getenv "HOME")))
+      (let ((repo (egix-repo-discover default-directory t)))
+        (should (user-ptrp repo))
+        (should (egix-repo-workdir repo)))
+      ;; HOME must be exactly what it was before the suppressed open.
+      (should (equal (getenv "HOME") home-before)))))
+
 (ert-deftest egix-test-repo-workdir ()
   "Test the egix-repo-workdir function."
   (egix-test--with-test-repo

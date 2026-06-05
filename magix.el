@@ -137,6 +137,20 @@ Checks if current directory is in an excluded repository or accessed via TRAMP."
                                       (expand-file-name default-directory)))
                      magix-excluded-repositories))))
 
+(defun magix--home-is-process-local-p ()
+  "Return non-nil when HOME is set for this process but not for subprocesses.
+Emacs synthesizes HOME (e.g. from %APPDATA% on Windows) when the launching
+environment did not provide one. That synthesized value lives in the C
+runtime environment but is absent from `process-environment', so child
+processes such as git never see it and fall back to their own home
+resolution. egix runs in-process and would otherwise read the synthesized
+value, disagreeing with git over which config files to read. Detect that
+case here so the caller can ask egix to ignore it.
+
+`getenv-internal' scoped to `process-environment' reflects exactly what a
+subprocess inherits, unlike `getenv', which falls back to the C runtime."
+  (null (getenv-internal "HOME" process-environment)))
+
 (defun magix--repo-discover-if-not-inside-gitdir (&optional directory)
   "Discover repo, by usage of egix-repo-discover, in directory DIRECTORY
 but only return it if DIRECTORY is not inside gitdir of the repo.
@@ -148,7 +162,8 @@ Returns nil if DIRECTORY is inside the gitdir."
          ;; that points to a directory in another git repo, git works on
          ;; the repo containing the pointed to directory whereas gix
          ;; returns the repo containing the symlink
-         (repo (egix-repo-discover (file-truename directory)))
+         (repo (egix-repo-discover (file-truename directory)
+                                   (magix--home-is-process-local-p)))
          (gitdir (egix-repo-gitdir repo))
          (current-dir (expand-file-name directory)))
     (unless (file-in-directory-p current-dir gitdir)

@@ -1,5 +1,4 @@
 use emacs::{defun, Env, IntoLisp, Result, Value};
-use gix::ObjectId;
 
 emacs::plugin_is_GPL_compatible!();
 
@@ -47,9 +46,40 @@ fn resolve_ref<'a>(repo: &'a gix::Repository, name: &str) -> Option<gix::Referen
     repo.find_reference(name).ok()
 }
 
-/// Discover and open a repository from a path
-#[defun(user_ptr)]
-fn repo_discover(path: String) -> Result<gix::Repository> {
+/// Removes `HOME` from the process environment for its lifetime, restoring the
+/// previous value (if any) on drop.
+///
+/// Mutating the envirennement is ~probably~ safe in this case because
+/// we are running on the main thread of emacs and there shouldn't be any worker
+/// thread trying to read the environnement.
+struct HomeGuard(Option<std::ffi::OsString>);
+
+impl HomeGuard {
+    fn suppress() -> Self {
+        let prev = std::env::var_os("HOME");
+        std::env::remove_var("HOME");
+        HomeGuard(prev)
+    }
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        if let Some(prev) = self.0.take() {
+            std::env::set_var("HOME", prev);
+        }
+    }
+}
+
+/// Discover and open a repository from a path.
+///
+/// When SUPPRESS_HOME is non-nil, `HOME` is removed from the environment for
+/// the duration of the open so gix resolves the global config the way a `git`
+/// subprocess would. Callers pass this when their `HOME` is process-local and
+/// not inherited by subprocesses (e.g. the value Emacs synthesizes on Windows),
+/// so that gix and git agree on which config files to read.
+#[defun(user_ptr, name = "-repo-discover-internal")]
+fn repo_discover_internal(path: String, suppress_home: Value) -> Result<gix::Repository> {
+    let _guard = suppress_home.is_not_nil().then(HomeGuard::suppress);
     let repo = gix::discover(&path)
         .map_err(|e| emacs::Error::msg(format!("Failed to discover repository: {}", e)))?;
 

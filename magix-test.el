@@ -684,6 +684,20 @@ Verifies parity with git when `[include]' is present in the local config."
         (should (equal (magit-get-all "core.abbrev") '("9")))
         (magix-test--assert-no-mismatch)))))
 
+(ert-deftest magix-test-home-process-local-detection ()
+  "`magix--home-is-process-local-p' keys off `process-environment' membership.
+An explicit HOME entry (what a subprocess inherits) means not process-local;
+its absence means HOME is synthesized for this process only."
+  (let ((process-environment
+         (cons "HOME=/some/explicit/home"
+               (seq-remove (lambda (s) (string-prefix-p "HOME=" s))
+                           process-environment))))
+    (should-not (magix--home-is-process-local-p)))
+  (let ((process-environment
+         (seq-remove (lambda (s) (string-prefix-p "HOME=" s))
+                     process-environment)))
+    (should (magix--home-is-process-local-p))))
+
 (provide 'magix-test)
 
 ;;; magix-test.el ends here

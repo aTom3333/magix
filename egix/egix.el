@@ -84,6 +84,14 @@ Returns t if the module is now loaded, nil if build failed."
                      "egix-module: build failed, see *egix-module-build* buffer")))
                 nil t))))
 
+(defun egix--deferred-define ()
+  "Define some elisp function after the module is loaded"
+  (defun egix-repo-discover (path &optional suppress-home)
+    "Discover and open the repository containing PATH.
+With SUPPRESS-HOME non-nil, `HOME' is removed from the environment for the
+duration of the open, which changes of gix reads the git config"
+    (egix--repo-discover-internal path suppress-home)))
+
 ;;;###autoload
 (defun egix-load-module ()
   "Load the egix native module."
@@ -92,7 +100,9 @@ Returns t if the module is now loaded, nil if build failed."
     (if (egix--build-in-progress-p)
         (message "egix-module: cannot load module while build is in progress")
       (condition-case err
-          (module-load (egix--module-filename))
+          (progn
+            (module-load (egix--module-filename))
+            (egix--deferred-define))
         (error
          (error "Egix module could not be loaded: %s" (error-message-string err)))))))
 

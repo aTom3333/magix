@@ -158,6 +158,11 @@ error are both fine — both let the dispatcher fall back to git)."
       ;; Fully qualified -> shortened
       (should (string= (egix-revparse-abbrev-ref repo "refs/heads/test-branch")
                        "test-branch"))
+      ;; A valid object that is not a ref (raw commit hash) -> empty string,
+      ;; NOT nil: git prints nothing but exits 0 here, so the answer is "found,
+      ;; no symbolic name" rather than "not found".
+      (let ((sha (egix-revparse-single repo "HEAD")))
+        (should (equal (egix-revparse-abbrev-ref repo sha) "")))
       ;; Non-existent ref -> nil
       (should-not (egix-revparse-abbrev-ref repo "no-such-branch"))
       ;; No upstream configured yet -> nil (definitive: there is no upstream)
@@ -205,6 +210,11 @@ error are both fine — both let the dispatcher fall back to git)."
       ;; Already fully qualified -> itself
       (should (string= (egix-revparse-symbolic-full-name repo "refs/heads/test-branch")
                        "refs/heads/test-branch"))
+      ;; A valid object that is not a ref (raw commit hash) -> empty string,
+      ;; NOT nil: git prints nothing but exits 0 here, so the answer is "found,
+      ;; no symbolic name" rather than "not found".
+      (let ((sha (egix-revparse-single repo "HEAD")))
+        (should (equal (egix-revparse-symbolic-full-name repo sha) "")))
       ;; Non-existent ref -> nil
       (should-not (egix-revparse-symbolic-full-name repo "no-such-branch"))
       ;; No upstream configured -> nil (definitive)

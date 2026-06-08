@@ -213,9 +213,11 @@ shape). Callers should fall back to the git CLI."
      (error (if magix-strict-dispatch (signal (car err) (cdr err)) nil))))
 
 (defmacro magix--line (form)
-  "Evaluate FORM; if it yields a non-nil string, append a trailing newline.
+  "Evaluate FORM; if it yields a non-empty string, append a trailing newline.
+An empty string stays empty (git writes zero bytes but still exits 0 — e.g. a
+revspec that names a valid object with no symbolic name); nil stays nil.
 Helper for dispatcher arms that produce single-line git output."
-  `(let ((v ,form)) (and v (concat v "\n"))))
+  `(let ((v ,form)) (and v (if (string= v "") v (concat v "\n")))))
 
 (defun magix--format-config-get-all-z (values)
   "Format VALUES as git's `-z --get-all KEY' output: VALUE\\0 per entry.

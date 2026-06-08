@@ -188,12 +188,20 @@ fn upstream_full_name(
     Ok(upstream_ref.map(|r| r.into_owned()))
 }
 
+/// Shared tail for `--abbrev-ref` / `--symbolic-full-name` when SPEC is not a ref. Returns
+/// `Some("")` when SPEC names a valid object (a raw commit hash, `HEAD~1`, ...) — git prints
+/// nothing and exits 0 in that case — and `None` when SPEC resolves to nothing at all.
+fn object_not_ref(repo: &gix::Repository, spec: &str) -> Option<String> {
+    repo.rev_parse_single(spec).ok().map(|_| String::new())
+}
+
 /// Equivalent to `git rev-parse --verify --abbrev-ref SPEC`: the short symbolic name SPEC
-/// resolves to (e.g. branch name) or nil if SPEC is not an existing ref.
+/// resolves to (e.g. branch name). Returns an empty string when SPEC names a valid object
+/// that is not a ref, or nil when SPEC resolves to nothing.
 ///
 /// Handles the common `BRANCH@{upstream}` / `BRANCH@{u}` form by looking up the branch's
 /// fetch-direction tracking ref. Other `@{...}` expressions (reflog, `@{push}`, etc.) are
-/// not implemented; an error is signalled so the caller falls back to git.
+/// not implemented; an error is signalled instead.
 #[defun]
 fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     if let Some(branch) = spec
@@ -208,7 +216,7 @@ fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<St
         )));
     }
     let Some(reference) = resolve_ref(repo, spec.as_str()) else {
-        return Ok(None);
+        return Ok(object_not_ref(repo, spec.as_str()));
     };
     let name = match reference.target() {
         gix::refs::TargetRef::Symbolic(target) => target.shorten().to_string(),
@@ -219,9 +227,9 @@ fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<St
 
 /// Equivalent to `git rev-parse --verify --symbolic-full-name SPEC`: the full
 /// ref name SPEC resolves to (one level of symbolic indirection followed, so
-/// `HEAD` resolves to `refs/heads/main`). Returns nil for non-existent refs.
-/// Handles `BRANCH@{upstream}` / `BRANCH@{u}`; other `@{...}` shapes signal an
-/// error so the caller falls back to git.
+/// `HEAD` resolves to `refs/heads/main`). Returns an empty string when SPEC
+/// names a valid object that is not a ref, or nil when SPEC resolves to nothing.
+/// Handles `BRANCH@{upstream}` / `BRANCH@{u}`; other `@{...}` shapes signal an error.
 #[defun]
 fn revparse_symbolic_full_name(
     repo: &gix::Repository,
@@ -239,7 +247,7 @@ fn revparse_symbolic_full_name(
         )));
     }
     let Some(reference) = resolve_ref(repo, spec.as_str()) else {
-        return Ok(None);
+        return Ok(object_not_ref(repo, spec.as_str()));
     };
     let name = match reference.target() {
         gix::refs::TargetRef::Symbolic(target) => target.as_bstr().to_string(),

@@ -266,6 +266,27 @@ error are both fine — both let the dispatcher fall back to git)."
       (should-not (egix-symbolic-ref repo "refs/heads/nope"))
       (should-not (egix-symbolic-ref-short repo "refs/heads/nope")))))
 
+(ert-deftest egix-test-object-type ()
+  "Test egix-object-type returns the object kind for each object type."
+  (egix-test--with-fresh-test-repo
+    (let ((default-directory egix-test-repo-path))
+      (shell-command "git tag -a v1 -m \"annotated tag\""))
+    (let* ((repo (egix-repo-discover default-directory))
+           (commit (egix-revparse-single repo "HEAD")))
+      ;; A commit resolved by full hash, abbreviation, and ref-ish revspec
+      (should (string= (egix-object-type repo commit) "commit"))
+      (should (string= (egix-object-type repo (substring commit 0 8)) "commit"))
+      (should (string= (egix-object-type repo "HEAD") "commit"))
+      ;; HEAD's tree, and a blob reached through the rev:path form
+      (should (string= (egix-object-type repo "HEAD^{tree}") "tree"))
+      (should (string= (egix-object-type repo "HEAD:README.md") "blob"))
+      ;; An annotated tag object
+      (should (string= (egix-object-type repo "v1") "tag"))
+      ;; A full-length hash with no matching object resolves to nil, not an error
+      (should-not (egix-object-type repo (make-string 40 ?0)))
+      ;; A name that resolves to nothing also yields nil
+      (should-not (egix-object-type repo "no-such-rev-xyz")))))
+
 (ert-deftest egix-test-error-handling ()
   "Test error handling for invalid repository paths."
   ;; repo-discover should signal error for non-repo path

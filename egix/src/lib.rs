@@ -133,6 +133,27 @@ fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String
     Ok(Some(id.to_string()))
 }
 
+/// Equivalent to `git cat-file -t SPEC`: the type of the object SPEC resolves
+/// to, as one of "commit", "tree", "blob", or "tag". Returns nil when SPEC does
+/// not name an existing object.
+#[defun]
+fn object_type(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
+    reject_reflog_revspec("egix-object-type", spec.as_str())?;
+    let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
+        return Ok(None);
+    };
+    let Ok(header) = repo.find_header(id.detach()) else {
+        return Ok(None);
+    };
+    let kind = match header.kind() {
+        gix::object::Kind::Commit => "commit",
+        gix::object::Kind::Tree => "tree",
+        gix::object::Kind::Blob => "blob",
+        gix::object::Kind::Tag => "tag",
+    };
+    Ok(Some(kind.to_string()))
+}
+
 /// Equivalent to `git rev-parse --short[=LENGTH] SPEC`. LENGTH is the minimum
 /// abbreviation width; nil uses git's configured default. Returns nil if SPEC
 /// cannot resolve.

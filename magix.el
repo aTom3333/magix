@@ -310,6 +310,8 @@ result. nil means \"fall back to git\"."
      (magix--with-repo (magix--line (egix-symbolic-ref-short repo ref))))
     (`("symbolic-ref" ,(and ref (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-symbolic-ref repo ref))))
+    (`("cat-file" "-t" ,(and obj (pred magix--not-option-p)))
+     (magix--with-repo (magix--line (egix-object-type repo obj))))
     (`("config" "-z" "--get-all" "--include" ,(and key (pred magix--not-option-p)))
      (magix--with-repo
        (magix--format-config-get-all-z (egix-config-get-all repo key nil))))

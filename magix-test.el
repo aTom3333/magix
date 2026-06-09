@@ -277,6 +277,28 @@ falls through correctly for unsupported `@{…}' shapes."
         (magit-ref-fullname "test-branch@{push}")
         (magix-test--assert-no-mismatch)))))
 
+(ert-deftest magix-test-magit-object-type ()
+  "Test that `magit-object-type' works with the magix `cat-file -t' override
+across every object kind, abbreviations, the rev:path form, and a missing
+object."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (let ((default-directory egix-test-repo-path))
+      (shell-command "git tag -a v1 -m \"annotated tag\""))
+    (let ((magix-debug-mode t)
+          (head (magit-rev-parse "HEAD")))
+      (magix-test--clear-debug-buffer)
+      (should (equal (magit-object-type head) "commit"))
+      (should (equal (magit-object-type (substring head 0 8)) "commit"))
+      (should (equal (magit-object-type "HEAD") "commit"))
+      (should (equal (magit-object-type "HEAD^{tree}") "tree"))
+      (should (equal (magit-object-type "HEAD:README.md") "blob"))
+      (should (equal (magit-object-type "v1") "tag"))
+      (should-not (magit-object-type (make-string 40 ?0)))
+      (should-not (magit-object-type "no-such-rev-xyz"))
+      (magix-test--assert-no-mismatch))))
+
 (ert-deftest magix-test-magit-gitdir ()
   "Test that `magit-gitdir' works with the magix --git-dir override across
 every gitdir shape — normal, --separate-git-dir, linked worktree, submodule

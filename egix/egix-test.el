@@ -70,7 +70,8 @@ and that the process HOME is left untouched afterwards."
            (gitdir (egix-repo-gitdir repo)))
       (should gitdir)
       (should (stringp gitdir))
-      (should (equal (expand-file-name ".git" egix-test-repo-path) gitdir)))))
+      (should (equal (expand-file-name ".git" egix-test-repo-path)
+                     (expand-file-name gitdir))))))
 
 (ert-deftest egix-test-repo-current-branch ()
   "Test the egix-repo-current-branch function."

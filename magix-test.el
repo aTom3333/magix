@@ -299,6 +299,43 @@ object."
       (should-not (magit-object-type "no-such-rev-xyz"))
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-list-remotes ()
+  "magit-list-remotes exercises the bare `remote' arm.
+Covers the no-remotes case (git exits 0 with no output) and git's sorted,
+multi-remote listing, with debug-mode parity against the git CLI."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      ;; No remotes configured yet.
+      (should (null (magit-list-remotes)))
+      (magix-test--git "remote" "add" "origin" "https://example.com/owner/repo.git")
+      (magix-test--git "remote" "add" "gh" "git@github.com:owner/repo.git")
+      ;; git sorts remote names; gix returns them from a sorted set.
+      (should (equal (magit-list-remotes) '("gh" "origin")))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-remote-get-url ()
+  "`magit-git-string \"remote\" \"get-url\"' exercises the get-url arm.
+Covers https and scp-like (`git@host:path') URL round-tripping plus a
+missing remote, with debug-mode parity against the git CLI."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (magix-test--git "remote" "add" "origin" "https://example.com/owner/repo.git")
+    (magix-test--git "remote" "add" "gh" "git@github.com:owner/repo.git")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (should (equal (magit-git-string "remote" "get-url" "origin")
+                     "https://example.com/owner/repo.git"))
+      (should (equal (magit-git-string "remote" "get-url" "gh")
+                     "git@github.com:owner/repo.git"))
+      (should (null (magit-git-string "remote" "get-url" "no-such-remote")))
+      (magix-test--assert-no-mismatch))))
+
 (ert-deftest magix-test-magit-gitdir ()
   "Test that `magit-gitdir' works with the magix --git-dir override across
 every gitdir shape — normal, --separate-git-dir, linked worktree, submodule

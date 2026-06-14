@@ -232,6 +232,13 @@ ALIST is a list of (KEY . VALUE) cons cells. Returns nil if empty."
        (mapconcat (lambda (pair) (concat (car pair) "\n" (cdr pair) "\0"))
                   alist "")))
 
+(defun magix--format-remote-names (names)
+  "Format NAMES (list of remote-name strings) as `git remote' output.
+Each name on its own line. Empty list yields the empty string, so the
+dispatcher reports exit 0 with no output (git's behaviour when no remotes
+are configured)."
+  (mapconcat (lambda (n) (concat n "\n")) names ""))
+
 (defun magix--config-normalize-c-key (raw-key)
   "Apply git's casing rule to RAW-KEY: lowercase section + variable,
 preserve subsection case. Returns nil for malformed keys."
@@ -312,6 +319,11 @@ result. nil means \"fall back to git\"."
      (magix--with-repo (magix--line (egix-symbolic-ref repo ref))))
     (`("cat-file" "-t" ,(and obj (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-object-type repo obj))))
+    (`("remote")
+     (magix--with-repo
+       (magix--format-remote-names (egix-remote-names repo))))
+    (`("remote" "get-url" ,(and name (pred magix--not-option-p)))
+     (magix--with-repo (magix--line (egix-remote-get-url repo name))))
     (`("config" "-z" "--get-all" "--include" ,(and key (pred magix--not-option-p)))
      (magix--with-repo
        (magix--format-config-get-all-z (egix-config-get-all repo key nil))))

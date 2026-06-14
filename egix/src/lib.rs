@@ -302,6 +302,32 @@ fn symbolic_target(repo: &gix::Repository, ref_name: &str, short: bool) -> Optio
     }
 }
 
+/// Equivalent to `git remote`: the configured remote names in git's sorted,
+/// de-duplicated order. Empty list (nil) when the repository has no remotes.
+#[defun]
+fn remote_names(repo: &gix::Repository) -> Result<List<String>> {
+    Ok(List(
+        repo.remote_names()
+            .into_iter()
+            .map(|name| name.to_string())
+            .collect(),
+    ))
+}
+
+/// Equivalent to `git remote get-url NAME`: the fetch URL of remote NAME with
+/// `url.<base>.insteadOf` rewrites applied. Returns nil when NAME is not a
+/// configured remote or has no fetch URL.
+#[defun]
+fn remote_get_url(repo: &gix::Repository, name: String) -> Result<Option<String>> {
+    let remote = match repo.try_find_remote(name.as_str()) {
+        None => return Ok(None),
+        Some(remote) => remote?,
+    };
+    Ok(remote
+        .url(gix::remote::Direction::Fetch)
+        .map(|url| url.to_bstring().to_string()))
+}
+
 #[derive(Copy, Clone)]
 enum ConfigScope {
     All,

@@ -299,6 +299,28 @@ object."
       (should-not (magit-object-type "no-such-rev-xyz"))
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-rev-format ()
+  "`magit-rev-format' / `magit-rev-insert-format' exercise the `log --no-walk
+--format=...' arm."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t))
+      (magix-test--clear-debug-buffer)
+      ;; Supported placeholders served from gix.
+      (dolist (fmt '("%H" "%h" "%s" "%h %s" "%an" "%ae" "%cn" "%ce"
+                     "%at" "%ct" "%h%x00%ct"))
+        (magit-rev-format fmt "HEAD"))
+      ;; Raw body goes through the insert path.
+      (with-temp-buffer
+        (magit-rev-insert-format "%B" "HEAD"))
+      ;; Unsupported placeholders must fall through to git.
+      (dolist (fmt '("%ad" "%aN" "%cd" "%D"))
+        (magit-rev-format fmt "HEAD"))
+      ;; A rev that does not resolve to a commit.
+      (magit-rev-format "%s" "no-such-rev-xyz")
+      (magix-test--assert-no-mismatch))))
+
 (ert-deftest magix-test-magit-list-remotes ()
   "magit-list-remotes exercises the bare `remote' arm.
 Covers the no-remotes case (git exits 0 with no output) and git's sorted,

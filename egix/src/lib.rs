@@ -154,6 +154,79 @@ fn object_type(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     Ok(Some(kind.to_string()))
 }
 
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Expand a `git log --format=` string against COMMIT, without the trailing
+/// newline git writes per entry. Unsupported placeholders (dates, mailmap
+/// `%aN`, `%D`, ...) and non-UTF-8 output are rejected so the caller falls back
+/// to git rather than emit a wrong answer.
+fn expand_commit_format(commit: &gix::Commit<'_>, format: &str) -> Result<String> {
+    let unsupported = || emacs::Error::msg("egix-commit-format: unsupported format placeholder");
+
+    let mut output: Vec<u8> = Vec::with_capacity(format.len());
+    let mut remaining = format.bytes();
+    while let Some(byte) = remaining.next() {
+        if byte != b'%' {
+            output.push(byte);
+            continue;
+        }
+        match remaining.next().ok_or_else(unsupported)? {
+            b'%' => output.push(b'%'),
+            b'n' => output.push(b'\n'),
+            b'x' => {
+                let high = remaining.next().and_then(hex_value).ok_or_else(unsupported)?;
+                let low = remaining.next().and_then(hex_value).ok_or_else(unsupported)?;
+                output.push((high << 4) | low);
+            }
+            b'H' => output.extend_from_slice(commit.id.to_string().as_bytes()),
+            b'h' => output.extend_from_slice(commit.short_id()?.to_string().as_bytes()),
+            b's' => {
+                let summary = commit.message()?.summary();
+                output.extend_from_slice(&summary);
+            }
+            b'B' => output.extend_from_slice(commit.message_raw()?),
+            actor @ (b'a' | b'c') => {
+                let signature = if actor == b'a' {
+                    commit.author()?
+                } else {
+                    commit.committer()?
+                };
+                match remaining.next().ok_or_else(unsupported)? {
+                    b'n' => output.extend_from_slice(signature.name),
+                    b'e' => output.extend_from_slice(signature.email),
+                    b't' => output.extend_from_slice(signature.seconds().to_string().as_bytes()),
+                    _ => return Err(unsupported()),
+                }
+            }
+            _ => return Err(unsupported()),
+        }
+    }
+    String::from_utf8(output)
+        .map_err(|_| emacs::Error::msg("egix-commit-format: non-UTF8 output"))
+}
+
+/// Equivalent to `git log --no-walk --format=FORMAT SPEC --` for one commit, sans
+/// git's trailing entry newline (the caller appends it). Nil when SPEC is not a
+/// commit; errors on an unsupported placeholder so the caller falls back to git.
+#[defun]
+fn commit_format(repo: &gix::Repository, spec: String, format: String) -> Result<Option<String>> {
+    reject_reflog_revspec("egix-commit-format", spec.as_str())?;
+    let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
+        return Ok(None);
+    };
+    let Ok(commit) = repo.find_commit(id.detach()) else {
+        return Ok(None);
+    };
+    Ok(Some(expand_commit_format(&commit, format.as_str())?))
+}
+
 /// Equivalent to `git rev-parse --short[=LENGTH] SPEC`. LENGTH is the minimum
 /// abbreviation width; nil uses git's configured default. Returns nil if SPEC
 /// cannot resolve.

@@ -319,6 +319,14 @@ result. nil means \"fall back to git\"."
      (magix--with-repo (magix--line (egix-symbolic-ref repo ref))))
     (`("cat-file" "-t" ,(and obj (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-object-type repo obj))))
+    (`("log" "--no-walk" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
+                         ,(and rev (pred magix--not-option-p)) "--")
+     (magix--with-repo
+       ;; git terminates each entry with a newline even when the format
+       ;; expands to nothing; an unresolved rev yields nil (empty/exit-1).
+       (when-let ((out (egix-commit-format
+                        repo rev (substring fmt (length "--format=")))))
+         (concat out "\n"))))
     (`("remote")
      (magix--with-repo
        (magix--format-remote-names (egix-remote-names repo))))

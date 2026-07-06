@@ -27,7 +27,8 @@
   (should (fboundp 'egix-revparse-abbrev-ref))
   (should (fboundp 'egix-revparse-symbolic-full-name))
   (should (fboundp 'egix-symbolic-ref))
-  (should (fboundp 'egix-symbolic-ref-short)))
+  (should (fboundp 'egix-symbolic-ref-short))
+  (should (fboundp 'egix-commit-format)))
 
 (ert-deftest egix-test-repo-discover ()
   "Test the egix-repo-discover function."

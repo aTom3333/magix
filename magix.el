@@ -344,6 +344,15 @@ result. nil means \"fall back to git\"."
      (magix--with-repo (egix-blob-content repo spec)))
     (`("cat-file" "blob" ,(and oid (pred magix--not-option-p)))
      (magix--with-repo (egix-blob-content repo oid)))
+    ;; `magit-blob-oid': one entry line. FILE is absolute; relativize to the
+    ;; worktree-relative path git reports.
+    (`("ls-tree" "--full-tree" ,(and rev (pred magix--not-option-p)) "--"
+                               ,(and file (pred magix--not-option-p)))
+     (magix--with-repo
+       (egix-ls-tree-entry
+        repo rev
+        (file-relative-name (magix--normalize-path file)
+                            (magix--normalize-path (egix-repo-workdir repo))))))
     (`("log" "--no-walk" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
                          ,(and rev (pred magix--not-option-p)) "--")
      (magix--with-repo

@@ -382,6 +382,25 @@ Covers an ASCII and a non-ASCII UTF-8 blob, with debug-mode parity against git."
         (should (equal (buffer-string) "caf\N{U+00E9}\n")))
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-blob-oid ()
+  "`magit-blob-oid' exercises the `ls-tree --full-tree' arm and matches git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-test-repo
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (should (equal (magit-blob-oid "HEAD" "subdir/nested.txt")
+                     (magit-rev-parse "HEAD:subdir/nested.txt")))
+      (should (equal (magit-blob-oid "HEAD" "README.md")
+                     (magit-rev-parse "HEAD:README.md")))
+      ;; Absolute path: the dispatcher must relativize it to match git.
+      (should (equal (magit-blob-oid
+                      "HEAD" (expand-file-name "subdir/nested.txt"
+                                               egix-test-repo-path))
+                     (magit-rev-parse "HEAD:subdir/nested.txt")))
+      (magix-test--assert-no-mismatch))))
+
 (ert-deftest magix-test-magit-rev-format ()
   "`magit-rev-format' / `magit-rev-insert-format' exercise the `log --no-walk
 --format=...' arm."

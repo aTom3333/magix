@@ -30,7 +30,8 @@
   (should (fboundp 'egix-symbolic-ref-short))
   (should (fboundp 'egix-commit-format))
   (should (fboundp 'egix-for-each-ref))
-  (should (fboundp 'egix-blob-content)))
+  (should (fboundp 'egix-blob-content))
+  (should (fboundp 'egix-ls-tree-entry)))
 
 (ert-deftest egix-test-repo-discover ()
   "Test the egix-repo-discover function."
@@ -411,6 +412,23 @@ non-blob and unresolved specs."
       (should-error (egix-blob-content repo "HEAD:bin.dat"))       ; non-UTF-8
       (should-error (egix-blob-content repo "HEAD^{tree}"))        ; not a blob
       (should-error (egix-blob-content repo "HEAD:no-such-file"))))) ; unresolved
+
+(ert-deftest egix-test-ls-tree-entry ()
+  "egix-ls-tree-entry formats one tree entry like `git ls-tree --full-tree'."
+  (egix-test--with-test-repo
+    (let* ((repo (egix-repo-discover default-directory))
+           (blob (egix-revparse-single repo "HEAD:subdir/nested.txt"))
+           (tree (egix-revparse-single repo "HEAD:subdir")))
+      ;; Nested regular file.
+      (should (equal (egix-ls-tree-entry repo "HEAD" "subdir/nested.txt")
+                     (format "100644 blob %s\tsubdir/nested.txt\n" blob)))
+      ;; Directory: a tree entry.
+      (should (equal (egix-ls-tree-entry repo "HEAD" "subdir")
+                     (format "040000 tree %s\tsubdir\n" tree)))
+      ;; No entry -> "".
+      (should (equal (egix-ls-tree-entry repo "HEAD" "no-such-file") ""))
+      ;; Unresolved rev signals.
+      (should-error (egix-ls-tree-entry repo "no-such-rev" "README.md")))))
 
 (provide 'egix-test)
 

@@ -179,6 +179,43 @@ fn blob_content(repo: &gix::Repository, spec: String) -> Result<String> {
         .map_err(|_| emacs::Error::msg("egix-blob-content: non-UTF8 content"))
 }
 
+/// Equivalent to `git ls-tree --full-tree REV -- FILE`.
+/// Returns the entry line `<mode> <type> <oid>\t<path>`, or "" if FILE is absent.
+/// Signals when REV is not a tree, so the caller falls back to git.
+#[defun]
+fn ls_tree_entry(repo: &gix::Repository, rev: String, file: String) -> Result<String> {
+    reject_reflog_revspec("egix-ls-tree-entry", rev.as_str())?;
+    let id = repo
+        .rev_parse_single(rev.as_str())
+        .map_err(|_| emacs::Error::msg("egix-ls-tree-entry: unresolved rev"))?;
+    let tree = repo
+        .find_object(id.detach())
+        .map_err(|_| emacs::Error::msg("egix-ls-tree-entry: object not found"))?
+        .peel_to_tree()
+        .map_err(|_| emacs::Error::msg("egix-ls-tree-entry: not a tree-ish"))?;
+    let Some(entry) = tree
+        .lookup_entry_by_path(file.as_str())
+        .map_err(|e| emacs::Error::msg(e.to_string()))?
+    else {
+        return Ok(String::new());
+    };
+    let mode = entry.mode();
+    let kind = if mode.is_tree() {
+        "tree"
+    } else if mode.is_commit() {
+        "commit"
+    } else {
+        "blob"
+    };
+    Ok(format!(
+        "{:06o} {} {}\t{}\n",
+        mode.value(),
+        kind,
+        entry.oid(),
+        file
+    ))
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

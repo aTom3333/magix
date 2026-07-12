@@ -28,7 +28,8 @@
   (should (fboundp 'egix-revparse-symbolic-full-name))
   (should (fboundp 'egix-symbolic-ref))
   (should (fboundp 'egix-symbolic-ref-short))
-  (should (fboundp 'egix-commit-format)))
+  (should (fboundp 'egix-commit-format))
+  (should (fboundp 'egix-for-each-ref)))
 
 (ert-deftest egix-test-repo-discover ()
   "Test the egix-repo-discover function."
@@ -315,6 +316,66 @@ error are both fine — both let the dispatcher fall back to git)."
           (should (stringp (egix-repo-current-branch repo1)))
           ;; Can still use repo2
           (should (stringp (egix-repo-current-branch repo2))))))))
+
+(ert-deftest egix-test-for-each-ref ()
+  "egix-for-each-ref lists a namespace sorted by full refname, capturing
+symbolic targets, with git-compatible short names."
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git branch aaa")
+    (egix-test--shell "git branch zzz")
+    (egix-test--shell "git symbolic-ref refs/heads/mysym refs/heads/test-branch")
+    (let* ((repo (egix-repo-discover default-directory))
+           (entries (egix-for-each-ref repo "refs/heads"))
+           (full-names (mapcar #'cadr entries)))
+      ;; Each entry is (SYMREF FULL SHORT). A direct branch has a nil SYMREF...
+      (should (member '(nil "refs/heads/aaa" "aaa") entries))
+      (should (member '(nil "refs/heads/test-branch" "test-branch") entries))
+      ;; ...and a symbolic ref carries the target's full refname (git's %(symref)).
+      (should (member '("refs/heads/test-branch" "refs/heads/mysym" "mysym") entries))
+      ;; Sorted ascending by full refname (git's default order).
+      (should (equal full-names (sort (copy-sequence full-names) #'string<)))
+      ;; Empty namespace -> nil (git exits 0 with no output).
+      (should (null (egix-for-each-ref repo "refs/nonexistent")))
+      ;; A trailing slash on the namespace is accepted and equivalent.
+      (should (equal entries (egix-for-each-ref repo "refs/heads/"))))))
+
+(ert-deftest egix-test-for-each-ref-remote-head-shortening ()
+  "A remote's symbolic HEAD shortens to the remote name (git's %(refname:short)),
+not gix's category strip `<remote>/HEAD'."
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git update-ref refs/remotes/origin/main HEAD")
+    (egix-test--shell "git update-ref refs/remotes/origin/feature HEAD")
+    (egix-test--shell "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main")
+    (let* ((repo (egix-repo-discover default-directory))
+           (entries (egix-for-each-ref repo "refs/remotes")))
+      (should (member '(nil "refs/remotes/origin/main" "origin/main") entries))
+      ;; origin/HEAD is symbolic; its short name is the remote, not `origin/HEAD'.
+      (should (member '("refs/remotes/origin/main" "refs/remotes/origin/HEAD" "origin")
+                      entries)))))
+
+(ert-deftest egix-test-for-each-ref-ambiguous-short ()
+  "An ambiguous abbreviation backs off to a longer form, matching git's
+shortest-unambiguous rule."
+  (egix-test--with-fresh-test-repo
+    ;; `origin' branch collides with the remote HEAD's abbreviation; `shared'
+    ;; exists as both a branch and a tag.
+    (egix-test--shell "git branch origin")
+    (egix-test--shell "git branch shared")
+    (egix-test--shell "git tag shared")
+    (egix-test--shell "git update-ref refs/remotes/origin/main HEAD")
+    (egix-test--shell "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main")
+    (let* ((repo (egix-repo-discover default-directory))
+           (heads (egix-for-each-ref repo "refs/heads"))
+           (tags (egix-for-each-ref repo "refs/tags"))
+           (remotes (egix-for-each-ref repo "refs/remotes")))
+      ;; `origin' clashes with refs/remotes/origin/HEAD -> "heads/origin".
+      (should (member '(nil "refs/heads/origin" "heads/origin") heads))
+      ;; branch/tag `shared' clash -> "heads/shared" / "tags/shared".
+      (should (member '(nil "refs/heads/shared" "heads/shared") heads))
+      (should (member '(nil "refs/tags/shared" "tags/shared") tags))
+      ;; The remote HEAD's "origin" clashes with the branch -> "origin/HEAD".
+      (should (member '("refs/remotes/origin/main" "refs/remotes/origin/HEAD" "origin/HEAD")
+                      remotes)))))
 
 (provide 'egix-test)
 

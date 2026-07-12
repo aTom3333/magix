@@ -171,6 +171,66 @@ Includes the edge cases where `core.bare' disagrees with the repo layout."
         
         (magix-test--assert-no-mismatch)))))
 
+(ert-deftest magix-test-magit-list-local-branch-names ()
+  "`magit-list-local-branch-names' uses the for-each-ref refs/heads arm.
+Symbolic refs are dropped from completion; debug-mode checks magix matches git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git branch aaa")
+    (egix-test--shell "git symbolic-ref refs/heads/mysym refs/heads/test-branch")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (let ((names (magit-list-local-branch-names)))
+        (should (member "aaa" names))
+        (should (member "test-branch" names))
+        ;; Symbolic ref excluded (its %(symref) field is non-empty).
+        (should-not (member "mysym" names)))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-list-branch-names-with-remotes ()
+  "`magit-list-branch-names' covers refs/heads and refs/remotes.
+Remote branches are listed, the symbolic remote HEAD is dropped, and debug-mode
+checks magix matches git (including the HEAD short name)."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git update-ref refs/remotes/origin/main HEAD")
+    (egix-test--shell "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (let ((names (magit-list-branch-names)))
+        (should (member "test-branch" names))
+        (should (member "origin/main" names))
+        ;; origin/HEAD is symbolic -> filtered from completion candidates.
+        (should-not (member "origin" names))
+        (should-not (member "origin/HEAD" names)))
+      (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-list-branch-names-ambiguous ()
+  "An ambiguous short name is served by magix and still matches git.
+git backs the abbreviation off to a longer form."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    ;; A branch literally named `origin' makes the remote HEAD's abbreviation
+    ;; ambiguous, forcing the backoff to a longer form.
+    (egix-test--shell "git branch origin")
+    (egix-test--shell "git update-ref refs/remotes/origin/main HEAD")
+    (egix-test--shell "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (let ((names (magit-list-branch-names)))
+        ;; git backs `refs/heads/origin' off to "heads/origin".
+        (should (member "heads/origin" names))
+        (should (member "origin/main" names))
+        ;; origin/HEAD is symbolic -> filtered out.
+        (should-not (member "origin/HEAD" names)))
+      (magix-test--assert-no-mismatch))))
+
 (ert-deftest magix-test-magit-log-current ()
   "Test that magit-log-current works with magix overrides active."
   (skip-unless (featurep 'egix-module))

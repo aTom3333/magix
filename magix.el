@@ -219,6 +219,25 @@ revspec that names a valid object with no symbolic name); nil stays nil.
 Helper for dispatcher arms that produce single-line git output."
   `(let ((v ,form)) (and v (if (string= v "") v (concat v "\n")))))
 
+(defun magix--for-each-ref-name-field (arg)
+  "Return `short' or `full' for the two for-each-ref formats magix handles.
+\\f is magit's field separator.  Any other format returns nil."
+  (cond
+   ((equal arg "--format=%(symref)\f%(refname:short)") 'short)
+   ((equal arg "--format=%(symref)\f%(refname)") 'full)))
+
+(defun magix--format-for-each-ref (entries field)
+  "Format `egix-for-each-ref' ENTRIES as git for-each-ref output.
+Each (SYMREF FULL SHORT) becomes a SYMREF\\fNAME line, NAME picked by FIELD
+\(`short' or `full')."
+  (mapconcat
+   (lambda (entry)
+     (concat (or (nth 0 entry) "")
+             "\f"
+             (if (eq field 'short) (nth 2 entry) (nth 1 entry))
+             "\n"))
+   entries ""))
+
 (defun magix--format-config-get-all-z (values)
   "Format VALUES as git's `-z --get-all KEY' output: VALUE\\0 per entry.
 Returns nil when VALUES is empty so the dispatcher emits exit 1."
@@ -332,6 +351,12 @@ result. nil means \"fall back to git\"."
        (magix--format-remote-names (egix-remote-names repo))))
     (`("remote" "get-url" ,(and name (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-remote-get-url repo name))))
+    ;; `magit-list-refs' default sort (branch/ref completion). The tags variant
+    ;; adds a `--sort=' token, does not match here, and falls through to git.
+    (`("for-each-ref" ,fmt ,(and ns (pred magix--not-option-p)))
+     (when-let ((field (magix--for-each-ref-name-field fmt)))
+       (magix--with-repo
+         (magix--format-for-each-ref (egix-for-each-ref repo ns) field))))
     (`("config" "-z" "--get-all" "--include" ,(and key (pred magix--not-option-p)))
      (magix--with-repo
        (magix--format-config-get-all-z (egix-config-get-all repo key nil))))

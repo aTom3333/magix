@@ -1,4 +1,5 @@
 use emacs::{defun, Env, IntoLisp, Result, Value};
+use std::collections::HashSet;
 
 emacs::plugin_is_GPL_compatible!();
 
@@ -181,8 +182,14 @@ fn expand_commit_format(commit: &gix::Commit<'_>, format: &str) -> Result<String
             b'%' => output.push(b'%'),
             b'n' => output.push(b'\n'),
             b'x' => {
-                let high = remaining.next().and_then(hex_value).ok_or_else(unsupported)?;
-                let low = remaining.next().and_then(hex_value).ok_or_else(unsupported)?;
+                let high = remaining
+                    .next()
+                    .and_then(hex_value)
+                    .ok_or_else(unsupported)?;
+                let low = remaining
+                    .next()
+                    .and_then(hex_value)
+                    .ok_or_else(unsupported)?;
                 output.push((high << 4) | low);
             }
             b'H' => output.extend_from_slice(commit.id.to_string().as_bytes()),
@@ -208,8 +215,7 @@ fn expand_commit_format(commit: &gix::Commit<'_>, format: &str) -> Result<String
             _ => return Err(unsupported()),
         }
     }
-    String::from_utf8(output)
-        .map_err(|_| emacs::Error::msg("egix-commit-format: non-UTF8 output"))
+    String::from_utf8(output).map_err(|_| emacs::Error::msg("egix-commit-format: non-UTF8 output"))
 }
 
 /// Equivalent to `git log --no-walk --format=FORMAT SPEC --` for one commit, sans
@@ -259,10 +265,7 @@ fn revparse_short(
 /// upstream. `remote_tracking_ref_name` does not cover the case where the
 /// upstream itself is a local branch (`branch.<name>.remote = .`); fall back
 /// to `remote_ref_name` then.
-fn upstream_full_name(
-    repo: &gix::Repository,
-    branch: &str,
-) -> Result<Option<gix::refs::FullName>> {
+fn upstream_full_name(repo: &gix::Repository, branch: &str) -> Result<Option<gix::refs::FullName>> {
     let Some(reference) = resolve_ref(repo, branch) else {
         return Ok(None);
     };
@@ -325,10 +328,7 @@ fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<St
 /// names a valid object that is not a ref, or nil when SPEC resolves to nothing.
 /// Handles `BRANCH@{upstream}` / `BRANCH@{u}`; other `@{...}` shapes signal an error.
 #[defun]
-fn revparse_symbolic_full_name(
-    repo: &gix::Repository,
-    spec: String,
-) -> Result<Option<String>> {
+fn revparse_symbolic_full_name(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     if let Some(branch) = spec
         .strip_suffix("@{upstream}")
         .or_else(|| spec.strip_suffix("@{u}"))
@@ -399,6 +399,87 @@ fn remote_get_url(repo: &gix::Repository, name: String) -> Result<Option<String>
     Ok(remote
         .url(gix::remote::Direction::Fetch)
         .map(|url| url.to_bstring().to_string()))
+}
+
+/// list of prefix and suffix resolve refs
+const REF_REV_PARSE_RULES: &[(&str, &str)] = &[
+    ("", ""),
+    ("refs/", ""),
+    ("refs/tags/", ""),
+    ("refs/heads/", ""),
+    ("refs/remotes/", ""),
+    ("refs/remotes/", "/HEAD"),
+];
+
+/// Compute the shortest refname that is unambigous (given the list of ref in the repo)
+fn short_refname(full: &str, existing: &HashSet<String>) -> String {
+    for candidate in (1..REF_REV_PARSE_RULES.len()).rev() {
+        let (prefix, suffix) = REF_REV_PARSE_RULES[candidate];
+        let Some(tail) = full
+            .strip_prefix(prefix)
+            .and_then(|s| s.strip_suffix(suffix))
+        else {
+            continue;
+        };
+        if tail.is_empty() {
+            continue;
+        }
+        let ambiguous = REF_REV_PARSE_RULES
+            .iter()
+            .enumerate()
+            .any(|(rule, &(p, s))| {
+                rule != candidate && existing.contains(&format!("{p}{tail}{s}"))
+            });
+        if !ambiguous {
+            return tail.to_string();
+        }
+    }
+    full.to_string()
+}
+
+/// Equivalent to `git for-each-ref NAMESPACE`
+/// NAMESPACE is a ref directory ("refs/heads")
+/// Returns a list of (SYMBOLIC_REF FULLNAME SHORTNAME) for each ref
+#[defun]
+fn for_each_ref(repo: &gix::Repository, namespace: String) -> Result<List<List<Option<String>>>> {
+    let prefix = if namespace.ends_with('/') {
+        namespace
+    } else {
+        format!("{namespace}/")
+    };
+
+    let platform = repo.references()?;
+
+    // Collect every refs so the shortname can be computed
+    let existing: HashSet<String> = platform
+        .all()?
+        .map(|reference| {
+            reference
+                .map(|r| r.name().as_bstr().to_string())
+                .map_err(|e| emacs::Error::msg(e.to_string()))
+        })
+        .collect::<Result<_>>()?;
+
+    let mut references = platform
+        .prefixed(prefix.as_str())?
+        .map(|reference| reference.map_err(|e| emacs::Error::msg(e.to_string())))
+        .collect::<Result<Vec<_>>>()?;
+    references.sort_by(|a, b| a.name().as_bstr().cmp(b.name().as_bstr()));
+
+    let entries = references
+        .into_iter()
+        .map(|reference| {
+            let symref = match reference.target() {
+                gix::refs::TargetRef::Symbolic(target) => Some(target.as_bstr().to_string()),
+                gix::refs::TargetRef::Object(_) => None,
+            };
+            let full = reference.name().as_bstr().to_string();
+            let short = short_refname(&full, &existing);
+            List(vec![symref, Some(full), Some(short)])
+        })
+        .collect();
+
+    Ok(List(entries))
 }
 
 #[derive(Copy, Clone)]

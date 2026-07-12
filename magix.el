@@ -196,10 +196,8 @@ Returns nil if DIRECTORY is inside the gitdir."
 (defmacro magix--with-repo (&rest body)
   "Run BODY with REPO bound to the discovered repository.
 
-Returns a single-element list (VALUE) when BODY produces an answer — including
-the case where VALUE is nil, which means \"definitively no such ref/value\"
-(gix did the work and the right answer is nil); callers should treat this as
-a final result and not call git.
+BODY must produce a git result cons (EXIT . OUTPUT); build it with
+`magix--found', `magix-output' or `magix-exit'. Returns that cons.
 
 Returns nil when the dispatcher cannot handle this query: no repository was
 discovered, current directory is inside the gitdir, or BODY signalled an error
@@ -208,7 +206,7 @@ shape). Callers should fall back to the git CLI."
   (declare (indent 0))
   `(condition-case err
        (when-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
-         (list (progn ,@body)))
+         ,@body)
      (rust-error nil)
      (error (if magix-strict-dispatch (signal (car err) (cdr err)) nil))))
 
@@ -218,6 +216,22 @@ An empty string stays empty (git writes zero bytes but still exits 0 — e.g. a
 revspec that names a valid object with no symbolic name); nil stays nil.
 Helper for dispatcher arms that produce single-line git output."
   `(let ((v ,form)) (and v (if (string= v "") v (concat v "\n")))))
+
+;; Every dispatch arm produces a git result as a cons (EXIT . OUTPUT): the exit
+;; code git would return and the exact bytes it would write to stdout ("" for
+;; none). These build one.
+(defsubst magix-output (string)
+  "Git result: exit 0 with STRING on stdout."
+  (cons 0 string))
+
+(defsubst magix-exit (code)
+  "Git result: exit CODE with no output."
+  (cons code ""))
+
+(defun magix--found (output)
+  "Git result for a lookup: exit 0 with OUTPUT, or exit 1 when OUTPUT is nil.
+An empty string is a found value (exit 0); nil means not found (exit 1)."
+  (if output (magix-output output) (magix-exit 1)))
 
 (defun magix--for-each-ref-name-field (arg)
   "Return `short' or `full' for the two for-each-ref formats magix handles.
@@ -296,93 +310,104 @@ SCOPE is \"local\", \"global\", \"system\", or nil for all scopes.
 DEFAULT, when non-nil, is the string returned if KEY is unset (mirrors
 `--default='); when nil, an unset KEY produces git's exit-1-no-output."
   (magix--with-repo
-    (let ((value (egix-config-get repo key scope)))
-      (cond
-       (value (concat value "\n"))
-       (default (concat default "\n"))
-       (t nil)))))
+    (magix--found
+     (let ((value (egix-config-get repo key scope)))
+       (cond
+        (value (concat value "\n"))
+        (default (concat default "\n"))
+        (t nil))))))
 
 (defun magix--git-output-dispatch (args)
-  "Return raw git output for ARGS using egix, or nil if not handled.
-
-A non-nil result is a single-element list (BYTES); BYTES is what git would
-have written to stdout (matching its exact format, including trailing
-newlines). BYTES may be nil to signal a definitive empty / not-found
-result. nil means \"fall back to git\"."
+  "Return the git result for ARGS using egix, or nil to fall back to git.
+A non-nil result is a cons (EXIT . OUTPUT): the exit code git would return and
+the bytes it would write to stdout (its exact format, or \"\" for none)."
   (pcase args
     (`("rev-parse" "--show-toplevel")
      (magix--with-repo
-       (magix--line (magix--normalize-path (egix-repo-workdir repo)))))
+       (magix--found (magix--line (magix--normalize-path (egix-repo-workdir repo))))))
     (`("rev-parse" "--git-dir")
-     (magix--with-repo (magix--line (magix--rev-parse-git-dir repo))))
+     (magix--with-repo (magix--found (magix--line (magix--rev-parse-git-dir repo)))))
     (`("rev-parse" "--is-bare-repository")
-     (magix--with-repo (if (egix-repo-workdir repo) "false\n" "true\n")))
+     (magix--with-repo (magix-output (if (egix-repo-workdir repo) "false\n" "true\n"))))
     (`("rev-parse" "--short" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-revparse-short repo ref nil))))
+     (magix--with-repo (magix--found (magix--line (egix-revparse-short repo ref nil)))))
     (`("rev-parse" ,(and arg (guard (string-prefix-p "--short=" arg)))
                    ,(and ref (pred magix--not-option-p)))
      (let ((len (string-to-number (substring arg (length "--short=")))))
        (and (> len 0)
-            (magix--with-repo (magix--line (egix-revparse-short repo ref len))))))
+            (magix--with-repo (magix--found (magix--line (egix-revparse-short repo ref len)))))))
     (`("rev-parse" "--verify" "--abbrev-ref" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-revparse-abbrev-ref repo ref))))
+     (magix--with-repo (magix--found (magix--line (egix-revparse-abbrev-ref repo ref)))))
     (`("rev-parse" "--verify" "--symbolic-full-name" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-revparse-symbolic-full-name repo ref))))
+     (magix--with-repo (magix--found (magix--line (egix-revparse-symbolic-full-name repo ref)))))
     (`("rev-parse" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-revparse-single repo ref))))
+     (magix--with-repo (magix--found (magix--line (egix-revparse-single repo ref)))))
     (`("rev-parse" "--verify" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-revparse-single repo ref))))
+     (magix--with-repo (magix--found (magix--line (egix-revparse-single repo ref)))))
     (`("symbolic-ref" "--short" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-symbolic-ref-short repo ref))))
+     (magix--with-repo (magix--found (magix--line (egix-symbolic-ref-short repo ref)))))
     (`("symbolic-ref" ,(and ref (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-symbolic-ref repo ref))))
+     (magix--with-repo (magix--found (magix--line (egix-symbolic-ref repo ref)))))
     (`("cat-file" "-t" ,(and obj (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-object-type repo obj))))
+     (magix--with-repo (magix--found (magix--line (egix-object-type repo obj)))))
     ;; Blob content: `cat-file -p REV:PATH' and `cat-file blob OID'. egix errors
     ;; out (fall through to git) for non-blob, non-UTF-8 or CR content.
     (`("cat-file" "-p" ,(and spec (pred magix--not-option-p)))
-     (magix--with-repo (egix-blob-content repo spec)))
+     (magix--with-repo (magix--found (egix-blob-content repo spec))))
     (`("cat-file" "blob" ,(and oid (pred magix--not-option-p)))
-     (magix--with-repo (egix-blob-content repo oid)))
+     (magix--with-repo (magix--found (egix-blob-content repo oid))))
     ;; `magit-blob-oid': one entry line. FILE is absolute; relativize to the
     ;; worktree-relative path git reports.
     (`("ls-tree" "--full-tree" ,(and rev (pred magix--not-option-p)) "--"
                                ,(and file (pred magix--not-option-p)))
      (magix--with-repo
-       (egix-ls-tree-entry
-        repo rev
-        (file-relative-name (magix--normalize-path file)
-                            (magix--normalize-path (egix-repo-workdir repo))))))
+       (magix--found
+        (egix-ls-tree-entry
+         repo rev
+         (file-relative-name (magix--normalize-path file)
+                             (magix--normalize-path (egix-repo-workdir repo)))))))
+    ;; `magit-anything-staged-p' FILE: exit 1 if the index differs from HEAD.
+    (`("diff" "--quiet" "--cached" "--submodule=short" "--"
+              ,(and file (pred magix--not-option-p)))
+     (magix--with-repo
+       (magix-exit
+        (if (egix-index-differs-from-head
+             repo
+             (file-relative-name (magix--normalize-path file)
+                                 (magix--normalize-path (egix-repo-workdir repo))))
+            1 0))))
     (`("log" "--no-walk" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
                          ,(and rev (pred magix--not-option-p)) "--")
      (magix--with-repo
        ;; git terminates each entry with a newline even when the format
-       ;; expands to nothing; an unresolved rev yields nil (empty/exit-1).
-       (when-let ((out (egix-commit-format
-                        repo rev (substring fmt (length "--format=")))))
-         (concat out "\n"))))
+       ;; expands to nothing; an unresolved rev yields nil (exit 1).
+       (magix--found
+        (when-let ((out (egix-commit-format
+                         repo rev (substring fmt (length "--format=")))))
+          (concat out "\n")))))
     (`("remote")
      (magix--with-repo
-       (magix--format-remote-names (egix-remote-names repo))))
+       (magix--found (magix--format-remote-names (egix-remote-names repo)))))
     (`("remote" "get-url" ,(and name (pred magix--not-option-p)))
-     (magix--with-repo (magix--line (egix-remote-get-url repo name))))
+     (magix--with-repo (magix--found (magix--line (egix-remote-get-url repo name)))))
     ;; `magit-list-refs' default sort (branch/ref completion). The tags variant
     ;; adds a `--sort=' token, does not match here, and falls through to git.
     (`("for-each-ref" ,fmt ,(and ns (pred magix--not-option-p)))
      (when-let ((field (magix--for-each-ref-name-field fmt)))
        (magix--with-repo
-         (magix--format-for-each-ref (egix-for-each-ref repo ns) field))))
+         (magix--found (magix--format-for-each-ref (egix-for-each-ref repo ns) field)))))
     (`("config" "-z" "--get-all" "--include" ,(and key (pred magix--not-option-p)))
      (magix--with-repo
-       (magix--format-config-get-all-z (egix-config-get-all repo key nil))))
+       (magix--found (magix--format-config-get-all-z (egix-config-get-all repo key nil)))))
     (`("config" "--local" "-z" "--get-all" "--include" ,(and key (pred magix--not-option-p)))
      (magix--with-repo
-       (magix--format-config-get-all-z (egix-config-get-all repo key "local"))))
+       (magix--found (magix--format-config-get-all-z (egix-config-get-all repo key "local")))))
     (`("config" "--list" "-z")
      (magix--with-repo
-       (magix--format-config-list-z
-        (append (egix-config-list repo nil)
-                (magix--config-c-overrides magit-git-global-arguments)))))
+       (magix--found
+        (magix--format-config-list-z
+         (append (egix-config-list repo nil)
+                 (magix--config-c-overrides magit-git-global-arguments))))))
     (`("config" "--global" ,(and key (pred magix--not-option-p)))
      (magix--config-get-single key "global" nil))
     (`("config" ,(and arg (guard (string-prefix-p "--default=" arg)))
@@ -404,18 +429,20 @@ in magit (all wrappers funnel through here)."
          (dispatched (and (magix--should-accelerate-p)
                           (magix--git-output-dispatch flat-args)))
          (writes-current (magix--destination-is-current-buffer-p destination))
-         (intercepted (and dispatched writes-current))
+         ;; A result is (EXIT . OUTPUT). Intercept when we can honour DESTINATION:
+         ;; the current buffer (insert OUTPUT) or nil (output discarded, as with
+         ;; `magit-git-exit-code'). Other destinations pass through.
+         (intercepted (and dispatched (or writes-current (null destination))))
          (debug-orig-duration 0.0)
          (result
           (cond
-           ;; Not handled, or unfamiliar destination shape — pass through.
            ((not intercepted)
             (apply orig-func destination args))
            ;; Debug-mode: run git for real, capture what it inserted, compare.
            (magix-debug-mode
             (let* ((before (point))
-                   (magix-bytes (or (car dispatched) ""))
-                   (magix-exit (if (car dispatched) 0 1))
+                   (magix-exit (car dispatched))
+                   (magix-bytes (if writes-current (cdr dispatched) ""))
                    ;; Time orig-func separately so it can be excluded from
                    ;; the stats duration — debug-mode comparison cost is not
                    ;; the operation's real cost.
@@ -430,10 +457,9 @@ in magit (all wrappers funnel through here)."
                                       (cons magix-bytes magix-exit)
                                       (cons orig-bytes orig-exit)))
               orig-exit))
-           ;; Definitive not-found: write nothing, exit non-zero.
-           ((null (car dispatched)) 1)
-           ;; Found: write magix bytes, exit zero.
-           (t (insert (car dispatched)) 0))))
+           (t
+            (when writes-current (insert (cdr dispatched)))
+            (car dispatched)))))
     (when start
       (magix--stats-record flat-args (and intercepted t)
                             (- (float-time (time-since start))

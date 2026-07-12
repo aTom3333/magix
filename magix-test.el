@@ -117,7 +117,7 @@ Includes the edge cases where `core.bare' disagrees with the repo layout."
     (let ((magix-debug-mode t))
       (magix-test--clear-debug-buffer)
       (should (equal (magix--git-output-dispatch '("rev-parse" "--is-bare-repository"))
-                     '("false\n")))
+                     '(0 . "false\n")))
       ;; non-bare layout: default, then core.bare=true, then core.bare=false
       (magit-bare-repo-p)
       (shell-command "git config core.bare true")
@@ -381,6 +381,33 @@ Covers an ASCII and a non-ASCII UTF-8 blob, with debug-mode parity against git."
         (magit--insert-blob-contents "HEAD" "utf8.txt")
         (should (equal (buffer-string) "caf\N{U+00E9}\n")))
       (magix-test--assert-no-mismatch))))
+
+(ert-deftest magix-test-magit-anything-staged-p ()
+  "`magit-anything-staged-p' FILE exercises the `diff --quiet --cached' arm.
+Absolute path, staged vs clean, with debug-mode parity against git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    (write-region "changed\n" nil (expand-file-name "test.txt" egix-test-repo-path))
+    (egix-test--shell "git add test.txt")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil)
+          (magix-record-stats t)
+          (magix--stats (make-hash-table :test 'equal))
+          (staged (expand-file-name "test.txt" egix-test-repo-path))
+          (clean (expand-file-name "README.md" egix-test-repo-path)))
+      (magix-test--clear-debug-buffer)
+      (should (magit-anything-staged-p nil staged))
+      (should-not (magit-anything-staged-p nil clean))
+      (magix-test--assert-no-mismatch)
+      ;; These are exit-code calls (nil destination); confirm they were actually
+      ;; intercepted, not just answered correctly by falling back to git.
+      (let ((cell (gethash (magix--stats-signature
+                            '("diff" "--quiet" "--cached" "--submodule=short" "--" "f"))
+                           magix--stats)))
+        (should cell)
+        (should (> (aref cell 0) 0))
+        (should (= (aref cell 1) (aref cell 0)))))))
 
 (ert-deftest magix-test-magit-blob-oid ()
   "`magit-blob-oid' exercises the `ls-tree --full-tree' arm and matches git."

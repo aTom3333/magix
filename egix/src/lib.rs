@@ -216,6 +216,55 @@ fn ls_tree_entry(repo: &gix::Repository, rev: String, file: String) -> Result<St
     ))
 }
 
+/// Whether the index differs from HEAD for FILE (git `diff --quiet --cached`;
+/// true = differs = git exit 1). FILE is repo-relative. Compares the index entry
+/// to HEAD's tree entry by oid and mode; an intent-to-add entry counts as absent
+/// and an unborn HEAD as an empty tree. Signals (caller falls back to git) for a
+/// submodule path, an unmerged entry, or a missing index.
+#[defun]
+fn index_differs_from_head(repo: &gix::Repository, file: String) -> Result<bool> {
+    let index = repo
+        .index()
+        .map_err(|_| emacs::Error::msg("egix-index-differs-from-head: no index"))?;
+    let staged = match index.entry_by_path(gix::bstr::BStr::new(file.as_bytes())) {
+        None => None,
+        Some(entry) => {
+            if entry.stage_raw() != 0 {
+                return Err(emacs::Error::msg("egix-index-differs-from-head: unmerged entry"));
+            }
+            if entry.mode.is_submodule() {
+                return Err(emacs::Error::msg("egix-index-differs-from-head: submodule"));
+            }
+            if entry.flags.contains(gix::index::entry::Flags::INTENT_TO_ADD) {
+                None
+            } else {
+                let mode = entry.mode.to_tree_entry_mode().ok_or_else(|| {
+                    emacs::Error::msg("egix-index-differs-from-head: unsupported mode")
+                })?;
+                Some((entry.id, mode.value()))
+            }
+        }
+    };
+    let head = match repo.head_tree() {
+        Err(_) => None, // unborn HEAD: treat as an empty tree
+        Ok(tree) => match tree
+            .lookup_entry_by_path(file.as_str())
+            .map_err(|e| emacs::Error::msg(e.to_string()))?
+        {
+            None => None,
+            Some(entry) => {
+                let mode = entry.mode();
+                if mode.is_commit() {
+                    return Err(emacs::Error::msg("egix-index-differs-from-head: submodule"));
+                }
+                Some((entry.oid().to_owned(), mode.value()))
+            }
+        },
+    };
+    // Staged iff the index and HEAD entries are not identical (oid + mode).
+    Ok(staged != head)
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

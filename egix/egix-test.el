@@ -31,7 +31,8 @@
   (should (fboundp 'egix-commit-format))
   (should (fboundp 'egix-for-each-ref))
   (should (fboundp 'egix-blob-content))
-  (should (fboundp 'egix-ls-tree-entry)))
+  (should (fboundp 'egix-ls-tree-entry))
+  (should (fboundp 'egix-index-differs-from-head)))
 
 (ert-deftest egix-test-repo-discover ()
   "Test the egix-repo-discover function."
@@ -429,6 +430,84 @@ non-blob and unresolved specs."
       (should (equal (egix-ls-tree-entry repo "HEAD" "no-such-file") ""))
       ;; Unresolved rev signals.
       (should-error (egix-ls-tree-entry repo "no-such-rev" "README.md")))))
+
+(ert-deftest egix-test-index-differs-from-head ()
+  "egix-index-differs-from-head matches `git diff --quiet --cached -- FILE'."
+  (egix-test--with-fresh-test-repo
+    ;; Baseline files, then stage a variety of changes.
+    (dolist (f '("clean.txt" "mod.txt" "del.txt" "mode.txt"))
+      (write-region (concat f "\n") nil (expand-file-name f egix-test-repo-path)))
+    (egix-test--shell "git add clean.txt mod.txt del.txt mode.txt")
+    (egix-test--shell "git commit -qm baseline")
+    (write-region "changed\n" nil (expand-file-name "mod.txt" egix-test-repo-path))
+    (egix-test--shell "git add mod.txt")                 ; staged modification
+    (egix-test--shell "git rm -q --cached del.txt")      ; staged deletion
+    (egix-test--shell "git update-index --chmod=+x mode.txt") ; staged mode change
+    (write-region "new\n" nil (expand-file-name "add.txt" egix-test-repo-path))
+    (egix-test--shell "git add add.txt")                 ; staged addition
+    (write-region "ita\n" nil (expand-file-name "ita.txt" egix-test-repo-path))
+    (egix-test--shell "git add -N ita.txt")              ; intent-to-add
+    (let ((repo (egix-repo-discover default-directory)))
+      (should-not (egix-index-differs-from-head repo "clean.txt"))
+      (should     (egix-index-differs-from-head repo "mod.txt"))
+      (should     (egix-index-differs-from-head repo "del.txt"))
+      (should     (egix-index-differs-from-head repo "mode.txt"))
+      (should     (egix-index-differs-from-head repo "add.txt"))
+      ;; Intent-to-add is NOT a staged change (git exits 0).
+      (should-not (egix-index-differs-from-head repo "ita.txt"))
+      ;; A path with no entry in index or HEAD.
+      (should-not (egix-index-differs-from-head repo "no-such-file")))))
+
+(ert-deftest egix-test-index-differs-from-head-unborn ()
+  "With an unborn HEAD, a file in the index counts as staged."
+  (egix-test--with-fresh-test-repo
+    (let ((unborn (make-temp-file "egix-unborn-" t)))
+      (unwind-protect
+          (let ((default-directory (file-name-as-directory unborn)))
+            (egix-test--shell "git init -q")
+            (egix-test--shell "git config user.email t@e.com")
+            (egix-test--shell "git config user.name t")
+            (write-region "z\n" nil (expand-file-name "h.txt" unborn))
+            (egix-test--shell "git add h.txt")
+            (let ((repo (egix-repo-discover default-directory)))
+              (should (egix-index-differs-from-head repo "h.txt"))))
+        (delete-directory unborn t)))))
+
+(ert-deftest egix-test-index-differs-from-head-defers ()
+  "Submodule and unmerged entries signal, so the caller falls back to git."
+  (egix-test--with-fresh-test-repo
+    (let ((sub (make-temp-file "egix-sub-" t)))
+      (unwind-protect
+          (progn
+            ;; A submodule at path "sub" (added before the conflict, since git
+            ;; refuses `submodule add' with an unmerged index).
+            (let ((default-directory (file-name-as-directory sub)))
+              (egix-test--shell "git init -q")
+              (egix-test--shell "git config user.email t@e.com")
+              (egix-test--shell "git config user.name t")
+              (write-region "s\n" nil (expand-file-name "s.txt" sub))
+              (egix-test--shell "git add s.txt")
+              (egix-test--shell "git commit -qm sub"))
+            (egix-test--shell
+             "git -c protocol.file.allow=always submodule add %s sub"
+             (shell-quote-argument sub))
+            (egix-test--shell "git commit -qm add-submodule")
+            ;; An unmerged entry: provoke a conflict on conflict.txt.
+            (write-region "base\n" nil (expand-file-name "conflict.txt" egix-test-repo-path))
+            (egix-test--shell "git add conflict.txt")
+            (egix-test--shell "git commit -qm base")
+            (egix-test--shell "git switch -q -c other")
+            (write-region "other\n" nil (expand-file-name "conflict.txt" egix-test-repo-path))
+            (egix-test--shell "git commit -qam other")
+            (egix-test--shell "git switch -q -")
+            (write-region "mine\n" nil (expand-file-name "conflict.txt" egix-test-repo-path))
+            (egix-test--shell "git commit -qam mine")
+            ;; This merge conflicts; a non-zero exit is expected.
+            (call-process "git" nil nil nil "-c" "core.editor=true" "merge" "other")
+            (let ((repo (egix-repo-discover default-directory)))
+              (should-error (egix-index-differs-from-head repo "sub"))
+              (should-error (egix-index-differs-from-head repo "conflict.txt"))))
+        (delete-directory sub t)))))
 
 (provide 'egix-test)
 

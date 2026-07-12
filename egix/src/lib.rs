@@ -155,6 +155,30 @@ fn object_type(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     Ok(Some(kind.to_string()))
 }
 
+/// Equivalent to `git cat-file blob OID` / `git cat-file -p REV:PATH` for a blob:
+/// the raw blob content. Errors (caller falls back to git) when SPEC is not a
+/// blob, or the content is not valid UTF-8 or contains CR -- Emacs decodes git's
+/// output with charset/EOL detection we do not replicate, so those go to git.
+#[defun]
+fn blob_content(repo: &gix::Repository, spec: String) -> Result<String> {
+    reject_reflog_revspec("egix-blob-content", spec.as_str())?;
+    let id = repo
+        .rev_parse_single(spec.as_str())
+        .map_err(|_| emacs::Error::msg("egix-blob-content: unresolved spec"))?;
+    let object = repo
+        .find_object(id.detach())
+        .map_err(|_| emacs::Error::msg("egix-blob-content: object not found"))?;
+    if object.kind != gix::object::Kind::Blob {
+        return Err(emacs::Error::msg("egix-blob-content: not a blob"));
+    }
+    if object.data.contains(&b'\r') {
+        return Err(emacs::Error::msg("egix-blob-content: CR in content"));
+    }
+    std::str::from_utf8(&object.data)
+        .map(str::to_string)
+        .map_err(|_| emacs::Error::msg("egix-blob-content: non-UTF8 content"))
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

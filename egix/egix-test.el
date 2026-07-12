@@ -29,7 +29,8 @@
   (should (fboundp 'egix-symbolic-ref))
   (should (fboundp 'egix-symbolic-ref-short))
   (should (fboundp 'egix-commit-format))
-  (should (fboundp 'egix-for-each-ref)))
+  (should (fboundp 'egix-for-each-ref))
+  (should (fboundp 'egix-blob-content)))
 
 (ert-deftest egix-test-repo-discover ()
   "Test the egix-repo-discover function."
@@ -376,6 +377,40 @@ shortest-unambiguous rule."
       ;; The remote HEAD's "origin" clashes with the branch -> "origin/HEAD".
       (should (member '("refs/remotes/origin/main" "refs/remotes/origin/HEAD" "origin/HEAD")
                       remotes)))))
+
+(ert-deftest egix-test-blob-content ()
+  "egix-blob-content returns a blob's raw bytes, via rev:path and via oid."
+  (egix-test--with-fresh-test-repo
+    (let ((coding-system-for-write 'utf-8-unix))
+      (write-region "" nil (expand-file-name "empty.txt" egix-test-repo-path)))
+    (egix-test--shell "git add empty.txt")
+    (egix-test--shell "git commit -qm empty")
+    (let ((repo (egix-repo-discover default-directory)))
+      ;; README.md is created by the test-repo helper.
+      (should (equal (egix-blob-content repo "HEAD:README.md")
+                     "# Test Repository\n"))
+      ;; Same blob addressed by its object id.
+      (let ((oid (egix-revparse-single repo "HEAD:README.md")))
+        (should (equal (egix-blob-content repo oid) "# Test Repository\n")))
+      ;; An empty blob is the empty string (git prints nothing, exit 0).
+      (should (equal (egix-blob-content repo "HEAD:empty.txt") "")))))
+
+(ert-deftest egix-test-blob-content-defers ()
+  "egix-blob-content signals (caller falls back to git) for CRLF, non-UTF-8,
+non-blob and unresolved specs."
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git config core.autocrlf false") ; keep CRLF in the blob
+    (let ((coding-system-for-write 'no-conversion))
+      (write-region "a\r\nb\r\n" nil (expand-file-name "crlf.txt" egix-test-repo-path))
+      (write-region (apply #'unibyte-string '(0 1 255 10)) nil
+                    (expand-file-name "bin.dat" egix-test-repo-path)))
+    (egix-test--shell "git add -A")
+    (egix-test--shell "git commit -qm blobs")
+    (let ((repo (egix-repo-discover default-directory)))
+      (should-error (egix-blob-content repo "HEAD:crlf.txt"))      ; CR in content
+      (should-error (egix-blob-content repo "HEAD:bin.dat"))       ; non-UTF-8
+      (should-error (egix-blob-content repo "HEAD^{tree}"))        ; not a blob
+      (should-error (egix-blob-content repo "HEAD:no-such-file"))))) ; unresolved
 
 (provide 'egix-test)
 

@@ -359,6 +359,29 @@ object."
       (should-not (magit-object-type "no-such-rev-xyz"))
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-blob-content ()
+  "`magit--insert-blob-contents' (blob visiting) exercises the `cat-file' arm.
+Covers an ASCII and a non-ASCII UTF-8 blob, with debug-mode parity against git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    ;; A non-ASCII UTF-8 file (e-acute U+00E9), LF.
+    (let ((coding-system-for-write 'utf-8-unix))
+      (write-region "caf\N{U+00E9}\n" nil
+                    (expand-file-name "utf8.txt" egix-test-repo-path)))
+    (egix-test--shell "git add utf8.txt")
+    (egix-test--shell "git commit -qm utf8")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil))
+      (magix-test--clear-debug-buffer)
+      (with-temp-buffer
+        (magit--insert-blob-contents "HEAD" "README.md")
+        (should (equal (buffer-string) "# Test Repository\n")))
+      (with-temp-buffer
+        (magit--insert-blob-contents "HEAD" "utf8.txt")
+        (should (equal (buffer-string) "caf\N{U+00E9}\n")))
+      (magix-test--assert-no-mismatch))))
+
 (ert-deftest magix-test-magit-rev-format ()
   "`magit-rev-format' / `magit-rev-insert-format' exercise the `log --no-walk
 --format=...' arm."

@@ -338,6 +338,12 @@ result. nil means \"fall back to git\"."
      (magix--with-repo (magix--line (egix-symbolic-ref repo ref))))
     (`("cat-file" "-t" ,(and obj (pred magix--not-option-p)))
      (magix--with-repo (magix--line (egix-object-type repo obj))))
+    ;; Blob content: `cat-file -p REV:PATH' and `cat-file blob OID'. egix errors
+    ;; out (fall through to git) for non-blob, non-UTF-8 or CR content.
+    (`("cat-file" "-p" ,(and spec (pred magix--not-option-p)))
+     (magix--with-repo (egix-blob-content repo spec)))
+    (`("cat-file" "blob" ,(and oid (pred magix--not-option-p)))
+     (magix--with-repo (egix-blob-content repo oid)))
     (`("log" "--no-walk" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
                          ,(and rev (pred magix--not-option-p)) "--")
      (magix--with-repo

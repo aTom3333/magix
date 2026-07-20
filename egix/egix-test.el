@@ -434,10 +434,15 @@ non-blob and unresolved specs."
 
 (ert-deftest egix-test-log ()
   "egix-log walks HEAD newest-first, honours the limit, and expands %D
-decorations (full names, HEAD first) and the mailmap author name."
+decorations (full names, HEAD first, symbolic refs under their own name) and
+the mailmap author name."
   (egix-test--with-fresh-test-repo
     (egix-test--shell "git tag v1")
     (egix-test--shell "git branch feature")
+    ;; A remote-tracking ref plus a symbolic remote HEAD pointing at it, both
+    ;; on HEAD: git decorates the symbolic ref under its own name.
+    (egix-test--shell "git update-ref refs/remotes/origin/main HEAD")
+    (egix-test--shell "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main")
     (let* ((repo (egix-repo-discover default-directory))
            (out (egix-log repo nil 2 "%h%x0c%D%x0c%aN%x0c%s"))
            (lines (split-string out "\n" t)))
@@ -450,6 +455,9 @@ decorations (full names, HEAD first) and the mailmap author name."
         (should (string-prefix-p "HEAD -> refs/heads/" (nth 1 fields)))
         (should (string-search "tag: refs/tags/v1" (nth 1 fields)))
         (should (string-search "refs/heads/feature" (nth 1 fields)))
+        ;; The symbolic ref keeps its own name, not renamed to its target.
+        (should (string-search "refs/remotes/origin/HEAD" (nth 1 fields)))
+        (should-not (string-match-p "origin/main.*origin/main" (nth 1 fields)))
         ;; %aN: mailmap-resolved author name.
         (should (equal (nth 2 fields) "Test User")))
       ;; A range rev is unsupported (caller falls back to git).

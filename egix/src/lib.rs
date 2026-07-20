@@ -750,15 +750,27 @@ impl Decorations {
         repo: &gix::Repository,
     ) -> Result<HashMap<gix::ObjectId, Vec<DecorationRef>>> {
         let references = repo.references()?;
+        // Capture each ref's own name before peeling: peeling follows symbolic
+        // refs (e.g. refs/remotes/*/HEAD) to their target and would otherwise
+        // rename them. Peel via the packed-refs peeled column for speed.
+        let packed = repo
+            .refs
+            .cached_packed_buffer()
+            .map_err(|e| emacs::Error::msg(e.to_string()))?;
+        let packed = packed.as_ref().map(|p| &***p);
         let mut refs: Vec<(String, gix::ObjectId, bool)> = Vec::new();
-        for reference in references.all()?.peeled()? {
-            let reference = reference.map_err(|e| emacs::Error::msg(e.to_string()))?;
+        for reference in references.all()? {
+            let mut reference = reference.map_err(|e| emacs::Error::msg(e.to_string()))?;
             let name = reference.name().as_bstr().to_string();
             if !Self::is_decoratable(&name) {
                 continue;
             }
             let is_tag = name.starts_with("refs/tags/");
-            refs.push((name, reference.id().detach(), is_tag));
+            let oid = reference
+                .peel_to_id_packed(packed)
+                .map_err(|e| emacs::Error::msg(e.to_string()))?
+                .detach();
+            refs.push((name, oid, is_tag));
         }
         refs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut map: HashMap<gix::ObjectId, Vec<DecorationRef>> = HashMap::new();

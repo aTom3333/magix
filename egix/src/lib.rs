@@ -803,7 +803,10 @@ fn parse_config_scope(scope: Option<String>) -> Result<ConfigScope> {
 fn config_source_matches(scope: ConfigScope, source: gix::config::Source) -> bool {
     use gix::config::Source as S;
     match scope {
-        ConfigScope::All => true,
+        // git config --list shows the real config sources; gix additionally
+        // holds its own defaults (Api, e.g. gitoxide.credentials.terminalPrompt)
+        // and env-derived overrides like HTTP_PROXY (EnvOverride) that git omits.
+        ConfigScope::All => !matches!(source, S::Api | S::EnvOverride),
         // `git config --local` reads the repository config (.git/config) and
         // any per-worktree config in newer git layouts.
         ConfigScope::Local => matches!(source, S::Local | S::Worktree),

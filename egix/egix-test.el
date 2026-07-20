@@ -32,7 +32,8 @@
   (should (fboundp 'egix-for-each-ref))
   (should (fboundp 'egix-blob-content))
   (should (fboundp 'egix-ls-tree-entry))
-  (should (fboundp 'egix-index-differs-from-head)))
+  (should (fboundp 'egix-index-differs-from-head))
+  (should (fboundp 'egix-log)))
 
 (ert-deftest egix-test-repo-discover ()
   "Test the egix-repo-discover function."
@@ -430,6 +431,29 @@ non-blob and unresolved specs."
       (should (equal (egix-ls-tree-entry repo "HEAD" "no-such-file") ""))
       ;; Unresolved rev signals.
       (should-error (egix-ls-tree-entry repo "no-such-rev" "README.md")))))
+
+(ert-deftest egix-test-log ()
+  "egix-log walks HEAD newest-first, honours the limit, and expands %D
+decorations (full names, HEAD first) and the mailmap author name."
+  (egix-test--with-fresh-test-repo
+    (egix-test--shell "git tag v1")
+    (egix-test--shell "git branch feature")
+    (let* ((repo (egix-repo-discover default-directory))
+           (out (egix-log repo nil 2 "%h%x0c%D%x0c%aN%x0c%s"))
+           (lines (split-string out "\n" t)))
+      ;; -n limit honoured.
+      (should (= (length lines) 2))
+      (let ((fields (split-string (car lines) "\f")))
+        ;; %h: an abbreviated hex hash.
+        (should (string-match-p "\\`[0-9a-f]+\\'" (nth 0 fields)))
+        ;; %D: HEAD's decorations, full names, HEAD -> first.
+        (should (string-prefix-p "HEAD -> refs/heads/" (nth 1 fields)))
+        (should (string-search "tag: refs/tags/v1" (nth 1 fields)))
+        (should (string-search "refs/heads/feature" (nth 1 fields)))
+        ;; %aN: mailmap-resolved author name.
+        (should (equal (nth 2 fields) "Test User")))
+      ;; A range rev is unsupported (caller falls back to git).
+      (should-error (egix-log repo "HEAD~1..HEAD" 10 "%h")))))
 
 (ert-deftest egix-test-index-differs-from-head ()
   "egix-index-differs-from-head matches `git diff --quiet --cached -- FILE'."

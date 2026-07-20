@@ -247,6 +247,35 @@ git backs the abbreviation off to a longer form."
       
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-recent-commits-log ()
+  "The status buffer's recent-commits log is intercepted and matches git,
+including decorations (%D) and the mailmap author (%aN)."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    ;; Refs so %D has content: HEAD carries a tag and an extra branch.
+    (egix-test--shell "git tag v1")
+    (egix-test--shell "git branch feature")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil)
+          (magix-record-stats t)
+          (magix--stats (make-hash-table :test 'equal)))
+      (magix-test--clear-debug-buffer)
+      (magit-status-setup-buffer default-directory)
+      (magix-test--assert-no-mismatch)
+      ;; Confirm the recent-commits walk was intercepted, not just correct via
+      ;; a fall-back to git.
+      (let (cell)
+        (maphash (lambda (sig c)
+                   (when (and (string-prefix-p "log " sig)
+                              (string-search "--decorate=full" sig)
+                              (string-search "--use-mailmap" sig))
+                     (setq cell c)))
+                 magix--stats)
+        (should cell)
+        (should (> (aref cell 0) 0))
+        (should (= (aref cell 1) (aref cell 0)))))))
+
 (ert-deftest magix-test-magit-abbrev-length ()
   "Test that `magit-abbrev-length' works with the magix --short override.
 `magit-abbrev-length' runs `rev-parse --short' against HEAD and HEAD~,

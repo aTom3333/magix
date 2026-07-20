@@ -385,6 +385,15 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
         (when-let ((out (egix-commit-format
                          repo rev (substring fmt (length "--format=")))))
           (concat out "\n")))))
+    (`("log" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
+             "--decorate=full"
+             ,(and n (guard (string-prefix-p "-n" n)))
+             "--use-mailmap" "--no-prefix" "--")
+     (magix--with-repo
+       (magix--found
+        (egix-log repo nil
+                  (string-to-number (substring n (length "-n")))
+                  (substring fmt (length "--format="))))))
     (`("remote")
      (magix--with-repo
        (magix--found (magix--format-remote-names (egix-remote-names repo)))))

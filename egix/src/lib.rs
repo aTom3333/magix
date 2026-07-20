@@ -1,5 +1,5 @@
 use emacs::{defun, Env, IntoLisp, Result, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 emacs::plugin_is_GPL_compatible!();
 
@@ -278,7 +278,12 @@ fn hex_value(byte: u8) -> Option<u8> {
 /// newline git writes per entry. Unsupported placeholders (dates, mailmap
 /// `%aN`, `%D`, ...) and non-UTF-8 output are rejected so the caller falls back
 /// to git rather than emit a wrong answer.
-fn expand_commit_format(commit: &gix::Commit<'_>, format: &str) -> Result<String> {
+fn expand_commit_format(
+    commit: &gix::Commit<'_>,
+    format: &str,
+    decorations: Option<&Decorations>,
+    mailmap: Option<&gix::mailmap::Snapshot>,
+) -> Result<String> {
     let unsupported = || emacs::Error::msg("egix-commit-format: unsupported format placeholder");
 
     let mut output: Vec<u8> = Vec::with_capacity(format.len());
@@ -304,6 +309,10 @@ fn expand_commit_format(commit: &gix::Commit<'_>, format: &str) -> Result<String
             }
             b'H' => output.extend_from_slice(commit.id.to_string().as_bytes()),
             b'h' => output.extend_from_slice(commit.short_id()?.to_string().as_bytes()),
+            b'D' => {
+                let decorations = decorations.ok_or_else(unsupported)?;
+                output.extend_from_slice(decorations.format(commit.id).as_bytes());
+            }
             b's' => {
                 let summary = commit.message()?.summary();
                 output.extend_from_slice(&summary);
@@ -318,6 +327,16 @@ fn expand_commit_format(commit: &gix::Commit<'_>, format: &str) -> Result<String
                 match remaining.next().ok_or_else(unsupported)? {
                     b'n' => output.extend_from_slice(signature.name),
                     b'e' => output.extend_from_slice(signature.email),
+                    field @ (b'N' | b'E') => {
+                        let mailmap = mailmap.ok_or_else(unsupported)?;
+                        let resolved = mailmap.resolve(signature);
+                        let value = if field == b'N' {
+                            &resolved.name
+                        } else {
+                            &resolved.email
+                        };
+                        output.extend_from_slice(value);
+                    }
                     b't' => output.extend_from_slice(signature.seconds().to_string().as_bytes()),
                     _ => return Err(unsupported()),
                 }
@@ -340,7 +359,67 @@ fn commit_format(repo: &gix::Repository, spec: String, format: String) -> Result
     let Ok(commit) = repo.find_commit(id.detach()) else {
         return Ok(None);
     };
-    Ok(Some(expand_commit_format(&commit, format.as_str())?))
+    Ok(Some(expand_commit_format(&commit, format.as_str(), None, None)?))
+}
+
+fn format_needs_mailmap(format: &str) -> bool {
+    format.contains("%aN")
+        || format.contains("%aE")
+        || format.contains("%cN")
+        || format.contains("%cE")
+}
+
+/// Equivalent to `git log --format=FORMAT [-n LIMIT] [REV]`, with REV defaulting
+/// to HEAD, walking in git's default commit-time order. Each entry is followed
+/// by a newline. Returns nil when REV does not resolve; errors (caller falls
+/// back to git) on a range REV or an unsupported format placeholder.
+#[defun]
+fn log(
+    repo: &gix::Repository,
+    rev: Option<String>,
+    limit: Option<usize>,
+    format: String,
+) -> Result<Option<String>> {
+    let spec = rev.as_deref().unwrap_or("HEAD");
+    reject_reflog_revspec("egix-log", spec)?;
+    if spec.contains("..") {
+        return Err(emacs::Error::msg("egix-log: range revspec unsupported"));
+    }
+    let Ok(tip) = repo.rev_parse_single(spec) else {
+        return Ok(None);
+    };
+    let decorations = if format.contains("%D") {
+        Some(Decorations::build(repo)?)
+    } else {
+        None
+    };
+    let mailmap = format_needs_mailmap(&format).then(|| repo.open_mailmap());
+
+    use gix::revision::walk::Sorting;
+    use gix::traverse::commit::simple::CommitTimeOrder;
+    let walk = repo
+        .rev_walk([tip.detach()])
+        .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
+        .all()?;
+
+    let mut output = String::new();
+    for (n, info) in walk.enumerate() {
+        if limit.is_some_and(|limit| n >= limit) {
+            break;
+        }
+        let info = info.map_err(|e| emacs::Error::msg(e.to_string()))?;
+        let commit = repo
+            .find_commit(info.id)
+            .map_err(|e| emacs::Error::msg(e.to_string()))?;
+        output.push_str(&expand_commit_format(
+            &commit,
+            &format,
+            decorations.as_ref(),
+            mailmap.as_ref(),
+        )?);
+        output.push('\n');
+    }
+    Ok(Some(output))
 }
 
 /// Equivalent to `git rev-parse --short[=LENGTH] SPEC`. LENGTH is the minimum
@@ -590,6 +669,115 @@ fn for_each_ref(repo: &gix::Repository, namespace: String) -> Result<List<List<O
         .collect();
 
     Ok(List(entries))
+}
+
+/// One ref decorating a commit: its full name and whether it is a tag.
+struct DecorationRef {
+    name: String,
+    is_tag: bool,
+}
+
+/// The `%D` decorations of a repository: the refs at each commit, and where
+/// HEAD points.
+struct Decorations {
+    /// oid -> refs decorating it, each list ordered as git emits `%D`.
+    refs: HashMap<gix::ObjectId, Vec<DecorationRef>>,
+    /// The commit HEAD resolves to, or None when unborn.
+    head_oid: Option<gix::ObjectId>,
+    /// Full name of the branch HEAD points to, or None when detached.
+    head_branch: Option<String>,
+}
+
+impl Decorations {
+    fn build(repo: &gix::Repository) -> Result<Self> {
+        // log.excludeDecoration switches the decorated set to a glob-filtered
+        // all-refs set; unsupported, so defer to git.
+        if repo
+            .config_snapshot()
+            .string("log.excludeDecoration")
+            .is_some()
+        {
+            return Err(emacs::Error::msg(
+                "egix-decorations: log.excludeDecoration is set",
+            ));
+        }
+        let refs = Self::decoratable_refs(repo)?;
+        let head = repo.head()?;
+        let head_branch = head.referent_name().map(|name| name.as_bstr().to_string());
+        let head_oid = head.id().map(|id| id.detach());
+        Ok(Self {
+            refs,
+            head_oid,
+            head_branch,
+        })
+    }
+
+    /// git's `%D` with `--decorate=full` for OID: HEAD first (`HEAD -> <branch>`
+    /// when on a branch, else a bare `HEAD`), then the refs at OID with `tag: `
+    /// on tags. Empty string when nothing decorates OID.
+    fn format(&self, oid: gix::ObjectId) -> String {
+        let mut tokens: Vec<String> = Vec::new();
+        let head_branch = match (self.head_oid == Some(oid)).then_some(&self.head_branch) {
+            Some(Some(branch)) => {
+                tokens.push(format!("HEAD -> {branch}"));
+                Some(branch.as_str())
+            }
+            Some(None) => {
+                tokens.push("HEAD".to_string());
+                None
+            }
+            None => None,
+        };
+        if let Some(refs) = self.refs.get(&oid) {
+            for reference in refs {
+                if Some(reference.name.as_str()) == head_branch {
+                    continue; // already shown as `HEAD -> <branch>`
+                }
+                if reference.is_tag {
+                    tokens.push(format!("tag: {}", reference.name));
+                } else {
+                    tokens.push(reference.name.clone());
+                }
+            }
+        }
+        tokens.join(", ")
+    }
+
+    /// Collect the decoratable refs, peeled to their commit, as an oid -> refs
+    /// map. Each oid's list is in git's `%D` order: the reverse of an ascending
+    /// full-name sort.
+    fn decoratable_refs(
+        repo: &gix::Repository,
+    ) -> Result<HashMap<gix::ObjectId, Vec<DecorationRef>>> {
+        let references = repo.references()?;
+        let mut refs: Vec<(String, gix::ObjectId, bool)> = Vec::new();
+        for reference in references.all()?.peeled()? {
+            let reference = reference.map_err(|e| emacs::Error::msg(e.to_string()))?;
+            let name = reference.name().as_bstr().to_string();
+            if !Self::is_decoratable(&name) {
+                continue;
+            }
+            let is_tag = name.starts_with("refs/tags/");
+            refs.push((name, reference.id().detach(), is_tag));
+        }
+        refs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut map: HashMap<gix::ObjectId, Vec<DecorationRef>> = HashMap::new();
+        for (name, oid, is_tag) in refs.into_iter().rev() {
+            map.entry(oid)
+                .or_default()
+                .push(DecorationRef { name, is_tag });
+        }
+        Ok(map)
+    }
+
+    /// The ref namespaces git decorates by default: branches, remotes, tags,
+    /// and the stash. Notes, bisect, replace, prefetch, etc. are excluded.
+    fn is_decoratable(name: &str) -> bool {
+        name.starts_with("refs/heads/")
+            || name.starts_with("refs/remotes/")
+            || name.starts_with("refs/tags/")
+            || name == "refs/stash"
+    }
 }
 
 #[derive(Copy, Clone)]

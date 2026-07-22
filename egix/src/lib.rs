@@ -111,6 +111,13 @@ fn repo_gitdir(repo: &gix::Repository) -> Result<String> {
     Ok(repo.git_dir().to_string_lossy().to_string())
 }
 
+/// Equivalent to `git rev-parse --is-bare-repository`: the `core.bare` value
+/// when set, otherwise inferred from whether the repository has a worktree.
+#[defun]
+fn repo_is_bare(repo: &gix::Repository) -> Result<bool> {
+    Ok(repo.is_bare())
+}
+
 fn reject_reflog_revspec(fn_name: &str, spec: &str) -> Result<()> {
     if spec.contains("@{") {
         // gix and git can diverge on @{N}/@{-N}/@{push}/etc. — e.g. @{-1} returns a

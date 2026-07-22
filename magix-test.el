@@ -534,6 +534,44 @@ subdirectory."
           (magix-test--assert-no-mismatch))
       (delete-directory root t))))
 
+(ert-deftest magix-test-magit-inside-gitdir ()
+  "From inside the gitdir (commit/rebase editing context) the discovery
+commands are intercepted and match git: --show-toplevel errors (exit 128),
+--git-dir is \".\", --is-bare-repository is false. Covers the main gitdir and
+a linked-worktree control dir."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-ingitdir-" t))
+        (g "git -c user.email=t@x -c user.name=t"))
+    (unwind-protect
+        (progn
+          (egix-test--shell
+           "cd %s && %s init -q main && cd main && touch a && %s add a && %s commit -qm i"
+           root g g g)
+          (egix-test--shell "cd %s/main && %s worktree add -q ../wt -b wtbranch" root g)
+          (let ((magix-debug-mode t)
+                (magit--refresh-cache nil)
+                (magix-record-stats t)
+                (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            (dolist (cwd (list (expand-file-name "main/.git" root)
+                               (expand-file-name "main/.git/worktrees/wt" root)))
+              (let ((default-directory (file-name-as-directory cwd)))
+                (magit-toplevel)
+                (magit-gitdir)
+                (magit-bare-repo-p)))
+            (magix-test--assert-no-mismatch)
+            ;; Each command was intercepted from inside the gitdir, not merely
+            ;; answered correctly by falling back to git.
+            (dolist (sig '("rev-parse --show-toplevel"
+                           "rev-parse --git-dir"
+                           "rev-parse --is-bare-repository"))
+              (let ((cell (gethash sig magix--stats)))
+                (should cell)
+                (should (> (aref cell 0) 0))
+                (should (= (aref cell 1) (aref cell 0)))))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-tramp-exclusion ()
   "Test that magix correctly excludes TRAMP paths."
   (skip-unless (featurep 'egix-module))

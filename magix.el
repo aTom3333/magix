@@ -151,22 +151,25 @@ case here so the caller can ask egix to ignore it.
 subprocess inherits, unlike `getenv', which falls back to the C runtime."
   (null (getenv-internal "HOME" process-environment)))
 
+(defun magix--repo-discover (&optional directory)
+  "Discover the repository at DIRECTORY (default `default-directory').
+Signals when DIRECTORY is not inside a repository."
+  ;; file-truename works around a gitoxide/git difference: given a symlink
+  ;; inside one repo pointing into another, git uses the pointed-to repo while
+  ;; gix uses the one containing the symlink; resolving it makes them agree.
+  (egix-repo-discover (file-truename (or directory default-directory))
+                      (magix--home-is-process-local-p)))
+
+(defun magix--cwd-inside-gitdir-p (repo &optional directory)
+  "Non-nil when DIRECTORY (default `default-directory') is inside REPO's gitdir."
+  (file-in-directory-p (expand-file-name (or directory default-directory))
+                       (egix-repo-gitdir repo)))
+
 (defun magix--repo-discover-if-not-inside-gitdir (&optional directory)
-  "Discover repo, by usage of egix-repo-discover, in directory DIRECTORY
-but only return it if DIRECTORY is not inside gitdir of the repo.
-Default value for DIRECTORY is DEFAULT-DIRECTORY
-Returns nil if DIRECTORY is inside the gitdir."
-  (let* ((directory (or directory default-directory))
-         ;; Work around behavior difference between git oxide and git
-         ;; when giving a path to a symlink that is inside a git repo and
-         ;; that points to a directory in another git repo, git works on
-         ;; the repo containing the pointed to directory whereas gix
-         ;; returns the repo containing the symlink
-         (repo (egix-repo-discover (file-truename directory)
-                                   (magix--home-is-process-local-p)))
-         (gitdir (egix-repo-gitdir repo))
-         (current-dir (expand-file-name directory)))
-    (unless (file-in-directory-p current-dir gitdir)
+  "Discover the repo at DIRECTORY, returning nil when DIRECTORY is inside its
+gitdir (git behaves specially there and gix's workdir diverges)."
+  (let ((repo (magix--repo-discover directory)))
+    (unless (magix--cwd-inside-gitdir-p repo directory)
       repo)))
 
 (defun magix--not-option-p (s)
@@ -206,6 +209,16 @@ shape). Callers should fall back to the git CLI."
   (declare (indent 0))
   `(condition-case err
        (when-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
+         ,@body)
+     (rust-error nil)
+     (error (if magix-strict-dispatch (signal (car err) (cdr err)) nil))))
+
+(defmacro magix--with-repo-allow-gitdir (&rest body)
+  "Like `magix--with-repo' but do not bail when `default-directory' is inside
+the gitdir; BODY (with REPO bound) must produce correct output for that case."
+  (declare (indent 0))
+  `(condition-case err
+       (when-let ((repo (magix--repo-discover)))
          ,@body)
      (rust-error nil)
      (error (if magix-strict-dispatch (signal (car err) (cdr err)) nil))))
@@ -323,12 +336,24 @@ A non-nil result is a cons (EXIT . OUTPUT): the exit code git would return and
 the bytes it would write to stdout (its exact format, or \"\" for none)."
   (pcase args
     (`("rev-parse" "--show-toplevel")
-     (magix--with-repo
-       (magix--found (magix--line (magix--normalize-path (egix-repo-workdir repo))))))
+     (magix--with-repo-allow-gitdir
+       (if (magix--cwd-inside-gitdir-p repo)
+           ;; Inside the gitdir (e.g. editing COMMIT_EDITMSG) git refuses:
+           ;; "must be run in a work tree" — exit 128, nothing on stdout.
+           (magix-exit 128)
+         (magix--found (magix--line (magix--normalize-path (egix-repo-workdir repo)))))))
     (`("rev-parse" "--git-dir")
-     (magix--with-repo (magix--found (magix--line (magix--rev-parse-git-dir repo)))))
+     (magix--with-repo-allow-gitdir
+       (if (magix--cwd-inside-gitdir-p repo)
+           ;; git prints the gitdir relative to cwd; the editing case is cwd ==
+           ;; gitdir, where it prints ".". Deeper subdirs are rare -> fall back.
+           (when (file-equal-p (file-truename default-directory)
+                               (file-truename (egix-repo-gitdir repo)))
+             (magix-output ".\n"))
+         (magix--found (magix--line (magix--rev-parse-git-dir repo))))))
     (`("rev-parse" "--is-bare-repository")
-     (magix--with-repo (magix-output (if (egix-repo-workdir repo) "false\n" "true\n"))))
+     (magix--with-repo-allow-gitdir
+       (magix-output (if (egix-repo-is-bare repo) "true\n" "false\n"))))
     (`("rev-parse" "--short" ,(and ref (pred magix--not-option-p)))
      (magix--with-repo (magix--found (magix--line (egix-revparse-short repo ref nil)))))
     (`("rev-parse" ,(and arg (guard (string-prefix-p "--short=" arg)))

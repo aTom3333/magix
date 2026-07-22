@@ -22,6 +22,7 @@
   (should (fboundp 'egix-repo-current-branch))
   (should (fboundp 'egix-repo-workdir))
   (should (fboundp 'egix-repo-gitdir))
+  (should (fboundp 'egix-repo-is-bare))
   (should (fboundp 'egix-revparse-single))
   (should (fboundp 'egix-revparse-short))
   (should (fboundp 'egix-revparse-abbrev-ref))

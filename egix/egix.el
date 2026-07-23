@@ -41,6 +41,11 @@
 (defvar egix--build-process nil
   "Current egix cargo build process.")
 
+(defvar egix-cargo-features nil
+  "List of cargo feature names to compile the egix module with.
+Because the module builds when this file is loaded, set this before egix is
+loaded. E.g. adding \"trace\" compiles in the flamegraph instrumentation.")
+
 (defun egix--module-filename ()
   (expand-file-name egix--module-name egix--module-directory))
 
@@ -63,7 +68,10 @@ Returns t if the module is now loaded, nil if build failed."
          (display-buffer-alist
           '(("\\*egix-module-build\\*" . (display-buffer-no-window))))
          (buf (compilation-start
-               "cargo build --release --color=always"
+               (concat "cargo build --release --color=always"
+                       (when egix-cargo-features
+                         (concat " --features "
+                                 (mapconcat #'identity egix-cargo-features ","))))
                nil
                (lambda (_) "*egix-module-build*"))))
 

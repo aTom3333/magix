@@ -56,6 +56,7 @@ fn resolve_ref<'a>(repo: &'a gix::Repository, name: &str) -> Option<gix::Referen
 struct HomeGuard(Option<std::ffi::OsString>);
 
 impl HomeGuard {
+    #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
     fn suppress() -> Self {
         let prev = std::env::var_os("HOME");
         std::env::remove_var("HOME");
@@ -64,6 +65,7 @@ impl HomeGuard {
 }
 
 impl Drop for HomeGuard {
+    #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
     fn drop(&mut self) {
         if let Some(prev) = self.0.take() {
             std::env::set_var("HOME", prev);
@@ -79,6 +81,7 @@ impl Drop for HomeGuard {
 /// not inherited by subprocesses (e.g. the value Emacs synthesizes on Windows),
 /// so that gix and git agree on which config files to read.
 #[defun(user_ptr, name = "-repo-discover-internal")]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn repo_discover_internal(path: String, suppress_home: Value) -> Result<gix::Repository> {
     let _guard = suppress_home.is_not_nil().then(HomeGuard::suppress);
     let repo = gix::discover(&path)
@@ -91,6 +94,7 @@ fn repo_discover_internal(path: String, suppress_home: Value) -> Result<gix::Rep
 /// Signals an error if the HEAD cannot be retrieved
 /// Returns nil if HEAD is not pointing to a branch
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn repo_current_branch(repo: &gix::Repository) -> Result<Option<String>> {
     let head = repo.head()?;
     Ok(head
@@ -100,6 +104,7 @@ fn repo_current_branch(repo: &gix::Repository) -> Result<Option<String>> {
 
 /// Get repository root path from a Repository handle
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn repo_workdir(repo: &gix::Repository) -> Result<Option<String>> {
     let root = repo.workdir().map(|p| p.to_string_lossy().to_string());
     Ok(root)
@@ -107,6 +112,7 @@ fn repo_workdir(repo: &gix::Repository) -> Result<Option<String>> {
 
 /// Get repository git dir from a Repository handle
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn repo_gitdir(repo: &gix::Repository) -> Result<String> {
     Ok(repo.git_dir().to_string_lossy().to_string())
 }
@@ -114,10 +120,12 @@ fn repo_gitdir(repo: &gix::Repository) -> Result<String> {
 /// Equivalent to `git rev-parse --is-bare-repository`: the `core.bare` value
 /// when set, otherwise inferred from whether the repository has a worktree.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn repo_is_bare(repo: &gix::Repository) -> Result<bool> {
     Ok(repo.is_bare())
 }
 
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn reject_reflog_revspec(fn_name: &str, spec: &str) -> Result<()> {
     if spec.contains("@{") {
         // gix and git can diverge on @{N}/@{-N}/@{push}/etc. — e.g. @{-1} returns a
@@ -133,6 +141,7 @@ fn reject_reflog_revspec(fn_name: &str, spec: &str) -> Result<()> {
 /// Resolve SPEC to an object id (as a string). Returns nil if SPEC does not
 /// resolve, so callers can short-circuit instead of consulting git.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     reject_reflog_revspec("egix-revparse-single", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
@@ -145,6 +154,7 @@ fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String
 /// to, as one of "commit", "tree", "blob", or "tag". Returns nil when SPEC does
 /// not name an existing object.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn object_type(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     reject_reflog_revspec("egix-object-type", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
@@ -167,6 +177,7 @@ fn object_type(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
 /// blob, or the content is not valid UTF-8 or contains CR -- Emacs decodes git's
 /// output with charset/EOL detection we do not replicate, so those go to git.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn blob_content(repo: &gix::Repository, spec: String) -> Result<String> {
     reject_reflog_revspec("egix-blob-content", spec.as_str())?;
     let id = repo
@@ -190,6 +201,7 @@ fn blob_content(repo: &gix::Repository, spec: String) -> Result<String> {
 /// Returns the entry line `<mode> <type> <oid>\t<path>`, or "" if FILE is absent.
 /// Signals when REV is not a tree, so the caller falls back to git.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn ls_tree_entry(repo: &gix::Repository, rev: String, file: String) -> Result<String> {
     reject_reflog_revspec("egix-ls-tree-entry", rev.as_str())?;
     let id = repo
@@ -229,6 +241,7 @@ fn ls_tree_entry(repo: &gix::Repository, rev: String, file: String) -> Result<St
 /// and an unborn HEAD as an empty tree. Signals (caller falls back to git) for a
 /// submodule path, an unmerged entry, or a missing index.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn index_differs_from_head(repo: &gix::Repository, file: String) -> Result<bool> {
     let index = repo
         .index()
@@ -272,6 +285,7 @@ fn index_differs_from_head(repo: &gix::Repository, file: String) -> Result<bool>
     Ok(staged != head)
 }
 
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -285,6 +299,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 /// newline git writes per entry. Unsupported placeholders (dates, mailmap
 /// `%aN`, `%D`, ...) and non-UTF-8 output are rejected so the caller falls back
 /// to git rather than emit a wrong answer.
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn expand_commit_format(
     commit: &gix::Commit<'_>,
     format: &str,
@@ -358,6 +373,7 @@ fn expand_commit_format(
 /// git's trailing entry newline (the caller appends it). Nil when SPEC is not a
 /// commit; errors on an unsupported placeholder so the caller falls back to git.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn commit_format(repo: &gix::Repository, spec: String, format: String) -> Result<Option<String>> {
     reject_reflog_revspec("egix-commit-format", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
@@ -369,6 +385,7 @@ fn commit_format(repo: &gix::Repository, spec: String, format: String) -> Result
     Ok(Some(expand_commit_format(&commit, format.as_str(), None, None)?))
 }
 
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn format_needs_mailmap(format: &str) -> bool {
     format.contains("%aN")
         || format.contains("%aE")
@@ -381,6 +398,7 @@ fn format_needs_mailmap(format: &str) -> bool {
 /// by a newline. Returns nil when REV does not resolve; errors (caller falls
 /// back to git) on a range REV or an unsupported format placeholder.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn log(
     repo: &gix::Repository,
     rev: Option<String>,
@@ -433,6 +451,7 @@ fn log(
 /// abbreviation width; nil uses git's configured default. Returns nil if SPEC
 /// cannot resolve.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn revparse_short(
     repo: &gix::Repository,
     spec: String,
@@ -461,6 +480,7 @@ fn revparse_short(
 /// upstream. `remote_tracking_ref_name` does not cover the case where the
 /// upstream itself is a local branch (`branch.<name>.remote = .`); fall back
 /// to `remote_ref_name` then.
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn upstream_full_name(repo: &gix::Repository, branch: &str) -> Result<Option<gix::refs::FullName>> {
     let Some(reference) = resolve_ref(repo, branch) else {
         return Ok(None);
@@ -484,6 +504,7 @@ fn upstream_full_name(repo: &gix::Repository, branch: &str) -> Result<Option<gix
 /// Shared tail for `--abbrev-ref` / `--symbolic-full-name` when SPEC is not a ref. Returns
 /// `Some("")` when SPEC names a valid object (a raw commit hash, `HEAD~1`, ...) — git prints
 /// nothing and exits 0 in that case — and `None` when SPEC resolves to nothing at all.
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn object_not_ref(repo: &gix::Repository, spec: &str) -> Option<String> {
     repo.rev_parse_single(spec).ok().map(|_| String::new())
 }
@@ -496,6 +517,7 @@ fn object_not_ref(repo: &gix::Repository, spec: &str) -> Option<String> {
 /// fetch-direction tracking ref. Other `@{...}` expressions (reflog, `@{push}`, etc.) are
 /// not implemented; an error is signalled instead.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     if let Some(branch) = spec
         .strip_suffix("@{upstream}")
@@ -524,6 +546,7 @@ fn revparse_abbrev_ref(repo: &gix::Repository, spec: String) -> Result<Option<St
 /// names a valid object that is not a ref, or nil when SPEC resolves to nothing.
 /// Handles `BRANCH@{upstream}` / `BRANCH@{u}`; other `@{...}` shapes signal an error.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn revparse_symbolic_full_name(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
     if let Some(branch) = spec
         .strip_suffix("@{upstream}")
@@ -549,16 +572,19 @@ fn revparse_symbolic_full_name(repo: &gix::Repository, spec: String) -> Result<O
 /// Equivalent to `git symbolic-ref REF_NAME`: the full target of a symbolic ref.
 /// Returns nil if REF_NAME does not exist or is not symbolic.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn symbolic_ref(repo: &gix::Repository, ref_name: String) -> Result<Option<String>> {
     Ok(symbolic_target(repo, ref_name.as_str(), false))
 }
 
 /// Equivalent to `git symbolic-ref --short REF_NAME`: shortened target of a symbolic ref.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn symbolic_ref_short(repo: &gix::Repository, ref_name: String) -> Result<Option<String>> {
     Ok(symbolic_target(repo, ref_name.as_str(), true))
 }
 
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn symbolic_target(repo: &gix::Repository, ref_name: &str, short: bool) -> Option<String> {
     let reference = resolve_ref(repo, ref_name)?;
     match reference.target() {
@@ -574,6 +600,7 @@ fn symbolic_target(repo: &gix::Repository, ref_name: &str, short: bool) -> Optio
 /// Equivalent to `git remote`: the configured remote names in git's sorted,
 /// de-duplicated order. Empty list (nil) when the repository has no remotes.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn remote_names(repo: &gix::Repository) -> Result<List<String>> {
     Ok(List(
         repo.remote_names()
@@ -587,6 +614,7 @@ fn remote_names(repo: &gix::Repository) -> Result<List<String>> {
 /// `url.<base>.insteadOf` rewrites applied. Returns nil when NAME is not a
 /// configured remote or has no fetch URL.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn remote_get_url(repo: &gix::Repository, name: String) -> Result<Option<String>> {
     let remote = match repo.try_find_remote(name.as_str()) {
         None => return Ok(None),
@@ -608,6 +636,7 @@ const REF_REV_PARSE_RULES: &[(&str, &str)] = &[
 ];
 
 /// Compute the shortest refname that is unambigous (given the list of ref in the repo)
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn short_refname(full: &str, existing: &HashSet<String>) -> String {
     for candidate in (1..REF_REV_PARSE_RULES.len()).rev() {
         let (prefix, suffix) = REF_REV_PARSE_RULES[candidate];
@@ -637,6 +666,7 @@ fn short_refname(full: &str, existing: &HashSet<String>) -> String {
 /// NAMESPACE is a ref directory ("refs/heads")
 /// Returns a list of (SYMBOLIC_REF FULLNAME SHORTNAME) for each ref
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn for_each_ref(repo: &gix::Repository, namespace: String) -> Result<List<List<Option<String>>>> {
     let prefix = if namespace.ends_with('/') {
         namespace
@@ -696,6 +726,7 @@ struct Decorations {
 }
 
 impl Decorations {
+    #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
     fn build(repo: &gix::Repository) -> Result<Self> {
         // log.excludeDecoration switches the decorated set to a glob-filtered
         // all-refs set; unsupported, so defer to git.
@@ -722,6 +753,7 @@ impl Decorations {
     /// git's `%D` with `--decorate=full` for OID: HEAD first (`HEAD -> <branch>`
     /// when on a branch, else a bare `HEAD`), then the refs at OID with `tag: `
     /// on tags. Empty string when nothing decorates OID.
+    #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
     fn format(&self, oid: gix::ObjectId) -> String {
         let mut tokens: Vec<String> = Vec::new();
         let head_branch = match (self.head_oid == Some(oid)).then_some(&self.head_branch) {
@@ -753,6 +785,7 @@ impl Decorations {
     /// Collect the decoratable refs, peeled to their commit, as an oid -> refs
     /// map. Each oid's list is in git's `%D` order: the reverse of an ascending
     /// full-name sort.
+    #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
     fn decoratable_refs(
         repo: &gix::Repository,
     ) -> Result<HashMap<gix::ObjectId, Vec<DecorationRef>>> {
@@ -791,6 +824,7 @@ impl Decorations {
 
     /// The ref namespaces git decorates by default: branches, remotes, tags,
     /// and the stash. Notes, bisect, replace, prefetch, etc. are excluded.
+    #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
     fn is_decoratable(name: &str) -> bool {
         name.starts_with("refs/heads/")
             || name.starts_with("refs/remotes/")
@@ -807,6 +841,7 @@ enum ConfigScope {
     System,
 }
 
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn parse_config_scope(scope: Option<String>) -> Result<ConfigScope> {
     match scope.as_deref() {
         None | Some("all") => Ok(ConfigScope::All),
@@ -819,6 +854,7 @@ fn parse_config_scope(scope: Option<String>) -> Result<ConfigScope> {
     }
 }
 
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn config_source_matches(scope: ConfigScope, source: gix::config::Source) -> bool {
     use gix::config::Source as S;
     match scope {
@@ -836,6 +872,7 @@ fn config_source_matches(scope: ConfigScope, source: gix::config::Source) -> boo
     }
 }
 
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn split_key(key: &str) -> Option<(&str, Option<&[u8]>, &str)> {
     let first_dot = key.find('.')?;
     let last_dot = key.rfind('.')?;
@@ -856,6 +893,7 @@ fn split_key(key: &str) -> Option<(&str, Option<&[u8]>, &str)> {
 /// values for KEY (in declared order, multi-value supported), or nil when
 /// the key has no values in the requested scope.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn config_get_all(
     repo: &gix::Repository,
     key: String,
@@ -882,6 +920,7 @@ fn config_get_all(
 /// Equivalent to `git config [--SCOPE] KEY`. Returns the effective single
 /// value (last-wins per git semantics), or nil when the key has no values.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn config_get(
     repo: &gix::Repository,
     key: String,
@@ -907,6 +946,7 @@ fn config_get(
 /// ((KEY1 . VALUE1) (KEY2 . VALUE2) ...) in declared order across the
 /// requested scope. nil when there are no entries.
 #[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn config_list(repo: &gix::Repository, scope: Option<String>) -> Result<AList<String, String>> {
     let scope = parse_config_scope(scope)?;
     let snapshot = repo.config_snapshot();
@@ -930,4 +970,140 @@ fn config_list(repo: &gix::Repository, scope: Option<String>) -> Result<AList<St
         }
     }
     Ok(AList(out))
+}
+
+// ---- Flamegraph trace instrumentation (feature = "trace") -------------------
+
+#[cfg(feature = "trace")]
+mod trace {
+    use std::fs::{File, OpenOptions};
+    use std::io::{BufWriter, Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use tracing::subscriber::Interest;
+    use tracing::Metadata;
+    use tracing_flame::FlameLayer;
+    use tracing_subscriber::layer::{Context, Filter};
+    use tracing_subscriber::prelude::*;
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+
+    type Shared = Arc<Mutex<BufWriter<File>>>;
+    static WRITER: OnceLock<Shared> = OnceLock::new();
+
+    /// Writer handed to the flame layer; forwards to the shared buffered file so
+    /// `flush` and `clear` act on the same handle the layer writes through.
+    struct SharedWriter(Shared);
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.lock().unwrap().flush()
+        }
+    }
+
+    /// Per-event gate so recording toggles at runtime; `sometimes` stops tracing
+    /// from caching the decision at each callsite.
+    struct Gate;
+    impl<S> Filter<S> for Gate {
+        fn enabled(&self, _meta: &Metadata<'_>, _cx: &Context<'_, S>) -> bool {
+            ENABLED.load(Ordering::Relaxed)
+        }
+        fn callsite_enabled(&self, _meta: &'static Metadata<'static>) -> Interest {
+            Interest::sometimes()
+        }
+    }
+
+    pub(crate) fn set_enabled(path: &str, enabled: bool) -> emacs::Result<()> {
+        if enabled && WRITER.get().is_none() {
+            // Write mode + seek-to-end so a re-used file accumulates rather than
+            // clobbers, while still allowing clear() to truncate (an append-mode
+            // handle can't set_len on Windows). The caller passes a per-process
+            // path so concurrent Emacs instances never share a file.
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(path)
+                .map_err(|e| emacs::Error::msg(format!("egix-trace: open {path}: {e}")))?;
+            file.seek(SeekFrom::End(0))
+                .map_err(|e| emacs::Error::msg(format!("egix-trace: seek {path}: {e}")))?;
+            let shared: Shared = Arc::new(Mutex::new(BufWriter::new(file)));
+            let layer = FlameLayer::new(SharedWriter(shared.clone()));
+            let _ = WRITER.set(shared);
+            tracing_subscriber::registry()
+                .with(layer.with_filter(Gate))
+                .try_init()
+                .map_err(|e| emacs::Error::msg(format!("egix-trace: init: {e}")))?;
+        }
+        ENABLED.store(enabled, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub(crate) fn flush() {
+        if let Some(writer) = WRITER.get() {
+            let _ = writer.lock().unwrap().flush();
+        }
+    }
+
+    pub(crate) fn clear() -> emacs::Result<()> {
+        if let Some(writer) = WRITER.get() {
+            let mut writer = writer.lock().unwrap();
+            let _ = writer.flush();
+            let file = writer.get_mut();
+            file.set_len(0)
+                .map_err(|e| emacs::Error::msg(format!("egix-trace: truncate: {e}")))?;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|e| emacs::Error::msg(format!("egix-trace: seek: {e}")))?;
+        }
+        Ok(())
+    }
+}
+
+/// Enable or disable flamegraph trace collection, writing folded stacks to PATH
+/// (a per-process file). Signals when ENABLED is non-nil but the module was
+/// built without the `trace` feature.
+#[cfg(feature = "trace")]
+#[defun]
+fn trace_set_enabled(path: String, enabled: Value) -> Result<()> {
+    trace::set_enabled(&path, enabled.is_not_nil())
+}
+
+#[cfg(not(feature = "trace"))]
+#[defun]
+fn trace_set_enabled(_path: String, enabled: Value) -> Result<()> {
+    if enabled.is_not_nil() {
+        return Err(emacs::Error::msg(
+            "egix built without the `trace` feature; set `egix-cargo-features' and rebuild",
+        ));
+    }
+    Ok(())
+}
+
+/// Flush buffered trace samples to disk.
+#[cfg(feature = "trace")]
+#[defun]
+fn trace_flush() -> Result<()> {
+    trace::flush();
+    Ok(())
+}
+
+#[cfg(not(feature = "trace"))]
+#[defun]
+fn trace_flush() -> Result<()> {
+    Ok(())
+}
+
+/// Discard this process's accumulated trace samples.
+#[cfg(feature = "trace")]
+#[defun]
+fn trace_clear() -> Result<()> {
+    trace::clear()
+}
+
+#[cfg(not(feature = "trace"))]
+#[defun]
+fn trace_clear() -> Result<()> {
+    Ok(())
 }

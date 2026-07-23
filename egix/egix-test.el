@@ -34,7 +34,10 @@
   (should (fboundp 'egix-blob-content))
   (should (fboundp 'egix-ls-tree-entry))
   (should (fboundp 'egix-index-differs-from-head))
-  (should (fboundp 'egix-log)))
+  (should (fboundp 'egix-log))
+  (should (fboundp 'egix-trace-set-enabled))
+  (should (fboundp 'egix-trace-flush))
+  (should (fboundp 'egix-trace-clear)))
 
 (ert-deftest egix-test-repo-discover ()
   "Test the egix-repo-discover function."
@@ -463,6 +466,27 @@ the mailmap author name."
         (should (equal (nth 2 fields) "Test User")))
       ;; A range rev is unsupported (caller falls back to git).
       (should-error (egix-log repo "HEAD~1..HEAD" 10 "%h")))))
+
+(ert-deftest egix-test-trace ()
+  "Trace defuns: without the `trace' build feature, enabling errors and
+flush/clear are no-ops; with it, enabling records folded spans and clearing
+truncates."
+  (egix-test--with-fresh-test-repo
+    (let ((tf (expand-file-name "trace.folded" egix-test-repo-path)))
+      (if (ignore-errors (egix-trace-set-enabled tf t) t)
+          ;; Built WITH the feature.
+          (unwind-protect
+              (let ((repo (egix-repo-discover (file-truename default-directory) t)))
+                (egix-log repo nil 5 "%h%x0c%aN%x0c%s")
+                (egix-trace-flush)
+                (should (> (file-attribute-size (file-attributes tf)) 0))
+                (egix-trace-clear)
+                (should (= (file-attribute-size (file-attributes tf)) 0)))
+            (egix-trace-set-enabled tf nil))
+        ;; Built WITHOUT the feature.
+        (should-error (egix-trace-set-enabled tf t))
+        (egix-trace-flush)
+        (egix-trace-clear)))))
 
 (ert-deftest egix-test-index-differs-from-head ()
   "egix-index-differs-from-head matches `git diff --quiet --cached -- FILE'."

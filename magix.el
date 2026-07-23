@@ -18,12 +18,37 @@
 
 (require 'cl-lib)
 (require 'magit)
-(require 'egix)
 
 (defgroup magix nil
   "Gitoxide-powered Magit acceleration."
   :group 'magit
   :prefix "magix-")
+
+;; Trace/flamegraph profiling adds instrumentation overhead, so it is compiled
+;; into egix only on request. egix builds when it is required (below), so the
+;; feature must be chosen first: set `magix-record-trace' before loading magix.
+(defcustom magix-record-trace nil
+  "When non-nil, collect flamegraph trace data through egix instrumentation.
+Set this before magix is loaded so the egix module is built with the `trace'
+cargo feature; enabling it on a module built without the feature signals an
+error.  Trace data is written per-process (see `magix-trace-file') and shares
+the stats lifecycle: periodic flush, flush on exit, and `magix-clear-stats'."
+  :type 'boolean
+  :group 'magix)
+
+(defcustom magix-trace-file (locate-user-emacs-file "magix-trace.folded")
+  "Base path for flamegraph trace output.
+Each Emacs instance writes to a per-process file derived from this by
+inserting its PID, so concurrent instances never share a file.  Render the
+accumulated data with e.g. `cat <base>.*.folded | inferno-flamegraph'."
+  :type 'file
+  :group 'magix)
+
+(defvar egix-cargo-features nil)         ; declared with its docstring in egix.el
+(when magix-record-trace
+  (add-to-list 'egix-cargo-features "trace"))
+
+(require 'egix)
 
 (defcustom magix-debug-mode nil
   "When non-nil, compare results from gitoxide and original Magit functions.
@@ -597,9 +622,21 @@ possible between a read and a write here, but the window is narrow."
       (magix--stats-write-file merged)
       (clrhash magix--stats))))
 
-(defun magix--save-stats-on-exit ()
-  "Persist any in-flight stats from `kill-emacs-hook'."
-  (ignore-errors (magix-save-stats)))
+(defun magix--trace-file ()
+  "Per-process trace file: `magix-trace-file' with this Emacs's PID inserted.
+Expanded to an absolute path, since egix (gix) does not resolve `~'."
+  (expand-file-name
+   (format "%s.%d.folded" (file-name-sans-extension magix-trace-file) (emacs-pid))))
+
+(defun magix--trace-flush ()
+  "Flush buffered trace samples to disk when trace recording is on."
+  (when magix-record-trace (ignore-errors (egix-trace-flush))))
+
+(defun magix--flush-all ()
+  "Flush in-flight stats and trace data.
+Run by the periodic timer and from `kill-emacs-hook'."
+  (ignore-errors (magix-save-stats))
+  (magix--trace-flush))
 
 (defun magix--stats-start-timer ()
   "Start the periodic save timer if it is not already running."
@@ -607,7 +644,7 @@ possible between a read and a write here, but the window is narrow."
     (setq magix--stats-save-timer
           (run-at-time magix-stats-save-interval
                        magix-stats-save-interval
-                       #'magix-save-stats))))
+                       #'magix--flush-all))))
 
 (defun magix--stats-stop-timer ()
   "Cancel the periodic save timer if running."
@@ -622,6 +659,16 @@ Empties `magix--stats' and deletes `magix-stats-file' if it exists."
   (clrhash magix--stats)
   (when (file-exists-p magix-stats-file)
     (delete-file magix-stats-file))
+  ;; Trace: truncate our own file (egix holds it open — deleting it would leave
+  ;; the writer with a dead handle) and delete any left by other/previous
+  ;; instances.
+  (ignore-errors (egix-trace-clear))
+  (let ((own (magix--trace-file)))
+    (dolist (file (file-expand-wildcards
+                   (expand-file-name
+                    (format "%s.*.folded" (file-name-sans-extension magix-trace-file)))))
+      (unless (file-equal-p file own)
+        (ignore-errors (delete-file file)))))
   (message "Magix stats cleared"))
 
 (defun magix-dump-stats ()
@@ -696,8 +743,18 @@ gitoxide implementation instead of calling Git CLI commands."
           (advice-add 'magit-process-git :around #'magix-magit-process-git)
           (push 'magit-process-git magix--advised-functions))
 
-        (add-hook 'kill-emacs-hook #'magix--save-stats-on-exit)
+        (add-hook 'kill-emacs-hook #'magix--flush-all)
         (magix--stats-start-timer)
+        (when magix-record-trace
+          ;; egix builds asynchronously, so the native module may not be loaded
+          ;; yet when this runs. Defer enabling until it provides `egix-module'
+          ;; (fires immediately if already loaded).
+          (with-eval-after-load 'egix-module
+            (when magix-mode
+              (condition-case err
+                  (egix-trace-set-enabled (magix--trace-file) t)
+                (error (message "magix: trace collection unavailable — %s"
+                                (error-message-string err)))))))
 
         (if magix--advised-functions
             (message "Magix acceleration enabled (%d functions advised)"
@@ -708,8 +765,10 @@ gitoxide implementation instead of calling Git CLI commands."
       (advice-remove func (intern (format "magix-%s" func))))
     (setq magix--advised-functions nil)
     (magix--stats-stop-timer)
-    (magix--save-stats-on-exit)
-    (remove-hook 'kill-emacs-hook #'magix--save-stats-on-exit)
+    (when magix-record-trace
+      (ignore-errors (egix-trace-set-enabled (magix--trace-file) nil)))
+    (magix--flush-all)
+    (remove-hook 'kill-emacs-hook #'magix--flush-all)
     (message "Magix acceleration disabled")))
 
 (provide 'magix)

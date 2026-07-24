@@ -178,12 +178,19 @@ subprocess inherits, unlike `getenv', which falls back to the C runtime."
 
 (defun magix--repo-discover (&optional directory)
   "Discover the repository at DIRECTORY (default `default-directory').
-Signals when DIRECTORY is not inside a repository."
-  ;; file-truename works around a gitoxide/git difference: given a symlink
-  ;; inside one repo pointing into another, git uses the pointed-to repo while
-  ;; gix uses the one containing the symlink; resolving it makes them agree.
-  (egix-repo-discover (file-truename (or directory default-directory))
-                      (magix--home-is-process-local-p)))
+Signals when DIRECTORY is not inside a repository.
+
+Cached in magit's per-refresh cache, so a single refresh discovers each repo
+once and reuses the handle (dropped when the refresh ends). Keyed by the raw
+DIRECTORY so cache hits avoid the `file-truename' I/O. Outside a refresh
+`magit--with-refresh-cache' is a no-op and each call discovers fresh."
+  (let ((directory (or directory default-directory)))
+    (magit--with-refresh-cache (list 'magix-repo directory)
+      ;; file-truename works around a gitoxide/git difference: given a symlink
+      ;; inside one repo pointing into another, git uses the pointed-to repo
+      ;; while gix uses the one containing the symlink; resolving makes them agree.
+      (egix-repo-discover (file-truename directory)
+                          (magix--home-is-process-local-p)))))
 
 (defun magix--cwd-inside-gitdir-p (repo &optional directory)
   "Non-nil when DIRECTORY (default `default-directory') is inside REPO's gitdir."

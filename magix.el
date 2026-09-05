@@ -197,12 +197,14 @@ DIRECTORY so cache hits avoid the `file-truename' I/O. Outside a refresh
   (file-in-directory-p (expand-file-name (or directory default-directory))
                        (egix-repo-gitdir repo)))
 
-(defun magix--repo-discover-if-not-inside-gitdir (&optional directory)
-  "Discover the repo at DIRECTORY, returning nil when DIRECTORY is inside its
-gitdir (git behaves specially there and gix's workdir diverges)."
-  (let ((repo (magix--repo-discover directory)))
-    (unless (magix--cwd-inside-gitdir-p repo directory)
-      repo)))
+(defun magix--worktree-relative-name (repo file)
+  "Return FILE relative to REPO's worktree, or nil when cwd is inside the gitdir."
+  ;; Inside the gitdir git resolves a pathspec against the gitdir itself and
+  ;; rejects an absolute path as outside the repository (exit 128), so a query
+  ;; carrying one of magit's absolute paths has to go to git.
+  (unless (magix--cwd-inside-gitdir-p repo)
+    (file-relative-name (magix--normalize-path file)
+                        (magix--normalize-path (egix-repo-workdir repo)))))
 
 (defun magix--not-option-p (s)
   "Check that s is a string that doesn't start with a -"
@@ -235,19 +237,12 @@ BODY must produce a git result cons (EXIT . OUTPUT); build it with
 `magix--found', `magix-output' or `magix-exit'. Returns that cons.
 
 Returns nil when the dispatcher cannot handle this query: no repository was
-discovered, current directory is inside the gitdir, or BODY signalled an error
-(typically because the underlying gix function does not implement this revspec
-shape). Callers should fall back to the git CLI."
-  (declare (indent 0))
-  `(condition-case err
-       (when-let ((repo (magix--repo-discover-if-not-inside-gitdir)))
-         ,@body)
-     (rust-error nil)
-     (error (if magix-strict-dispatch (signal (car err) (cdr err)) nil))))
+discovered, or BODY signalled an error (typically because the underlying gix
+function does not implement this revspec shape). Callers should fall back to
+the git CLI.
 
-(defmacro magix--with-repo-allow-gitdir (&rest body)
-  "Like `magix--with-repo' but do not bail when `default-directory' is inside
-the gitdir; BODY (with REPO bound) must produce correct output for that case."
+BODY also runs when `default-directory' is inside the gitdir, so it must not
+depend on the worktree."
   (declare (indent 0))
   `(condition-case err
        (when-let ((repo (magix--repo-discover)))
@@ -368,14 +363,14 @@ A non-nil result is a cons (EXIT . OUTPUT): the exit code git would return and
 the bytes it would write to stdout (its exact format, or \"\" for none)."
   (pcase args
     (`("rev-parse" "--show-toplevel")
-     (magix--with-repo-allow-gitdir
+     (magix--with-repo
        (if (magix--cwd-inside-gitdir-p repo)
            ;; Inside the gitdir (e.g. editing COMMIT_EDITMSG) git refuses:
            ;; "must be run in a work tree" — exit 128, nothing on stdout.
            (magix-exit 128)
          (magix--found (magix--line (magix--normalize-path (egix-repo-workdir repo)))))))
     (`("rev-parse" "--git-dir")
-     (magix--with-repo-allow-gitdir
+     (magix--with-repo
        (if (magix--cwd-inside-gitdir-p repo)
            ;; git prints the gitdir relative to cwd; the editing case is cwd ==
            ;; gitdir, where it prints ".". Deeper subdirs are rare -> fall back.
@@ -384,7 +379,7 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
              (magix-output ".\n"))
          (magix--found (magix--line (magix--rev-parse-git-dir repo))))))
     (`("rev-parse" "--is-bare-repository")
-     (magix--with-repo-allow-gitdir
+     (magix--with-repo
        (magix-output (if (egix-repo-is-bare repo) "true\n" "false\n"))))
     (`("rev-parse" "--short" ,(and ref (pred magix--not-option-p)))
      (magix--with-repo (magix--found (magix--line (egix-revparse-short repo ref nil)))))
@@ -418,21 +413,14 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
     (`("ls-tree" "--full-tree" ,(and rev (pred magix--not-option-p)) "--"
                                ,(and file (pred magix--not-option-p)))
      (magix--with-repo
-       (magix--found
-        (egix-ls-tree-entry
-         repo rev
-         (file-relative-name (magix--normalize-path file)
-                             (magix--normalize-path (egix-repo-workdir repo)))))))
+       (when-let ((path (magix--worktree-relative-name repo file)))
+         (magix--found (egix-ls-tree-entry repo rev path)))))
     ;; `magit-anything-staged-p' FILE: exit 1 if the index differs from HEAD.
     (`("diff" "--quiet" "--cached" "--submodule=short" "--"
               ,(and file (pred magix--not-option-p)))
      (magix--with-repo
-       (magix-exit
-        (if (egix-index-differs-from-head
-             repo
-             (file-relative-name (magix--normalize-path file)
-                                 (magix--normalize-path (egix-repo-workdir repo))))
-            1 0))))
+       (when-let ((path (magix--worktree-relative-name repo file)))
+         (magix-exit (if (egix-index-differs-from-head repo path) 1 0)))))
     (`("log" "--no-walk" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
                          ,(and rev (pred magix--not-option-p)) "--")
      (magix--with-repo

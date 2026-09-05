@@ -572,6 +572,62 @@ a linked-worktree control dir."
                 (should (= (aref cell 1) (aref cell 0)))))))
       (delete-directory root t))))
 
+(ert-deftest magix-test-inside-gitdir-broadened ()
+  "Commands that do not take a worktree path are intercepted from inside the gitdir."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-ingitdir-broad-" t))
+        (g "git -c user.email=t@x -c user.name=t"))
+    (unwind-protect
+        (progn
+          (egix-test--shell
+           "cd %s && %s init -q main && cd main && echo one > a.txt && %s add a.txt && %s commit -qm first"
+           root g g g)
+          (egix-test--shell
+           "cd %s/main && %s remote add origin https://example.com/r.git && echo two >> a.txt && %s add a.txt"
+           root g g)
+          (egix-test--shell "cd %s/main && %s worktree add -q ../wt -b wtbranch" root g)
+          (let ((magix-debug-mode t)
+                (magit--refresh-cache nil)
+                (magix-record-stats t)
+                (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            (dolist (cwd (list (expand-file-name "main/.git" root)
+                               (expand-file-name "main/.git/worktrees/wt" root)))
+              (let ((default-directory (file-name-as-directory cwd)))
+                (magit-rev-parse "HEAD")
+                (magit-rev-verify "HEAD")
+                (magit-rev-abbrev "HEAD")
+                (magit-get-current-branch)
+                (magit-get-upstream-branch)
+                (magit-object-type "HEAD")
+                (magit-rev-format "%s" "HEAD")
+                (magit-list-remotes)
+                (magit-get "remote.origin.url")
+                (magit-list-branch-names)
+                (magit-git-string "cat-file" "-p" "HEAD:a.txt")
+                ;; A worktree path cannot be resolved here, so this one is git's.
+                (magit-anything-staged-p nil "a.txt")
+                (should-not (magix--worktree-relative-name
+                             (magix--repo-discover) "a.txt"))))
+            (magix-test--assert-no-mismatch)
+            (dolist (sig '("rev-parse <arg>"
+                           "rev-parse --verify <arg>"
+                           "rev-parse --short <arg>"
+                           "rev-parse --verify --abbrev-ref <arg>"
+                           "symbolic-ref --short <arg>"
+                           "cat-file -t <arg>"
+                           "cat-file -p <arg>"
+                           "log --no-walk --format=%s <arg> --"
+                           "remote"
+                           "config -z --get-all --include <arg>"
+                           "for-each-ref --format=%(symref)\f%(refname:short) <arg>"))
+              (let ((cell (gethash sig magix--stats)))
+                (should cell)
+                (should (> (aref cell 0) 0))
+                (should (= (aref cell 1) (aref cell 0)))))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-tramp-exclusion ()
   "Test that magix correctly excludes TRAMP paths."
   (skip-unless (featurep 'egix-module))

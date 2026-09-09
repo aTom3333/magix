@@ -465,6 +465,11 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
              "--use-mailmap" "--no-prefix"
              ,(and rev (pred magix--not-option-p)) "--")
      (magix--log-decorated fmt n rev))
+    ;; `magit-rev-ancestor-p': exit 0 when ANCESTOR is reachable from DESCENDANT.
+    (`("merge-base" "--is-ancestor" ,(and ancestor (pred magix--not-option-p))
+                                   ,(and descendant (pred magix--not-option-p)))
+     (magix--with-repo
+       (magix-exit (if (egix-is-ancestor repo ancestor descendant) 0 1))))
     (`("remote")
      (magix--with-repo
        (magix--found (magix--format-remote-names (egix-remote-names repo)))))

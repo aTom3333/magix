@@ -150,6 +150,39 @@ fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String
     Ok(Some(id.to_string()))
 }
 
+/// Resolve SPEC to the commit it names, peeling an annotated tag.
+fn peel_to_commit_id(function: &str, repo: &gix::Repository, spec: &str) -> Result<gix::ObjectId> {
+    let id = repo
+        .rev_parse_single(spec)
+        .map_err(|_| emacs::Error::msg(format!("{function}: unresolved revspec `{spec}`")))?;
+    let commit = id
+        .object()
+        .map_err(|e| emacs::Error::msg(e.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| emacs::Error::msg(format!("{function}: `{spec}` is not a commit")))?;
+    Ok(commit.id)
+}
+
+/// Equivalent to `git merge-base --is-ancestor ANCESTOR DESCENDANT` (true = git
+/// exit 0). A commit is its own ancestor; unrelated histories are not related.
+/// Signals for a spec that names no commit, which git reports as exit 128.
+#[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
+fn is_ancestor(repo: &gix::Repository, ancestor: String, descendant: String) -> Result<bool> {
+    reject_reflog_revspec("egix-is-ancestor", ancestor.as_str())?;
+    reject_reflog_revspec("egix-is-ancestor", descendant.as_str())?;
+    let ancestor = peel_to_commit_id("egix-is-ancestor", repo, ancestor.as_str())?;
+    let descendant = peel_to_commit_id("egix-is-ancestor", repo, descendant.as_str())?;
+    // The best merge-base of the two is the ancestor itself exactly when the
+    // first commit is reachable from the second.
+    match repo.merge_base(ancestor, descendant) {
+        Ok(base) => Ok(base.detach() == ancestor),
+        // No merge-base at all means the histories are unrelated.
+        Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
+        Err(e) => Err(emacs::Error::msg(e.to_string())),
+    }
+}
+
 /// Equivalent to `git cat-file -t SPEC`: the type of the object SPEC resolves
 /// to, as one of "commit", "tree", "blob", or "tag". Returns nil when SPEC does
 /// not name an existing object.

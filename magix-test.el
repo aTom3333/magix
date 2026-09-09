@@ -568,6 +568,55 @@ Absolute path, staged vs clean, with debug-mode parity against git."
       (magit-rev-format "%s" "no-such-rev-xyz")
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-rev-ancestor-p ()
+  "`magit-rev-ancestor-p' exercises the `merge-base --is-ancestor' arm and matches git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-ancestor-" t))
+        (g "git -c user.email=t@x -c user.name=t"))
+    (unwind-protect
+        (progn
+          (egix-test--shell "cd %s && %s init -q -b main main" root g)
+          (egix-test--shell
+           "cd %s/main && echo one > a.txt && %s add a.txt && %s commit -qm first" root g g)
+          (egix-test--shell
+           "cd %s/main && echo two >> a.txt && %s add a.txt && %s commit -qm second" root g g)
+          (egix-test--shell "cd %s/main && %s tag -a v1 -m annotated HEAD" root g)
+          ;; A branch that diverges, so neither side reaches the other.
+          (egix-test--shell
+           "cd %s/main && %s checkout -q -b side HEAD~1 && echo s > s.txt && %s add s.txt && %s commit -qm side"
+           root g g g)
+          ;; A second root, so there is no merge-base at all.
+          (egix-test--shell
+           "cd %s/main && %s checkout -q --orphan orphan && %s rm -q -rf . && echo o > o.txt && %s add o.txt && %s commit -qm orphan"
+           root g g g g)
+          (egix-test--shell "cd %s/main && %s checkout -q main" root g)
+          (let ((default-directory (file-name-as-directory
+                                    (expand-file-name "main" root)))
+                (magix-debug-mode t)
+                (magit--refresh-cache nil)
+                (magix-record-stats t)
+                (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            (should (magit-rev-ancestor-p "HEAD~1" "HEAD"))
+            (should-not (magit-rev-ancestor-p "HEAD" "HEAD~1"))
+            ;; A commit reaches itself.
+            (should (magit-rev-ancestor-p "HEAD" "HEAD"))
+            (should-not (magit-rev-ancestor-p "side" "main"))
+            (should-not (magit-rev-ancestor-p "main" "side"))
+            (should-not (magit-rev-ancestor-p "orphan" "main"))
+            ;; An annotated tag is peeled to its commit on either side.
+            (should (magit-rev-ancestor-p "v1" "HEAD"))
+            (should (magit-rev-ancestor-p "HEAD~1" "v1"))
+            ;; A spec naming no commit is git's exit 128, so not an ancestor.
+            (should-not (magit-rev-ancestor-p "no-such-rev" "HEAD"))
+            (should-not (magit-rev-ancestor-p "HEAD^{tree}" "HEAD"))
+            (magix-test--assert-no-mismatch)
+            (let ((cell (gethash "merge-base --is-ancestor <arg> <arg>" magix--stats)))
+              (should cell)
+              (should (> (aref cell 1) 0)))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-magit-list-remotes ()
   "magit-list-remotes exercises the bare `remote' arm.
 Covers the no-remotes case (git exits 0 with no output) and git's sorted,

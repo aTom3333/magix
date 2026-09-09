@@ -206,6 +206,12 @@ DIRECTORY so cache hits avoid the `file-truename' I/O. Outside a refresh
     (file-relative-name (magix--normalize-path file)
                         (magix--normalize-path (egix-repo-workdir repo)))))
 
+(defun magix--cwd-relative-name (repo path)
+  "Return repo-relative PATH as git prints it: relative to `default-directory'."
+  (file-relative-name
+   (expand-file-name path (magix--normalize-path (egix-repo-workdir repo)))
+   (magix--normalize-path default-directory)))
+
 (defun magix--not-option-p (s)
   "Check that s is a string that doesn't start with a -"
   (and (stringp s)
@@ -415,6 +421,15 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
      (magix--with-repo
        (when-let ((path (magix--worktree-relative-name repo file)))
          (magix--found (egix-ls-tree-entry repo rev path)))))
+    ;; `magit--file-index-stages': one line per stage at FILE. An absent path is
+    ;; empty output and exit 0, not a lookup failure.
+    (`("ls-files" "--stage" "--" ,(and file (pred magix--not-option-p)))
+     (magix--with-repo
+       (when-let ((path (magix--worktree-relative-name repo file)))
+         (let ((printed (magix--cwd-relative-name repo path)))
+           (magix-output
+            (mapconcat (lambda (fields) (concat fields "\t" printed "\n"))
+                       (egix-index-stages repo path) ""))))))
     ;; `magit-anything-staged-p' FILE: exit 1 if the index differs from HEAD.
     (`("diff" "--quiet" "--cached" "--submodule=short" "--"
               ,(and file (pred magix--not-option-p)))

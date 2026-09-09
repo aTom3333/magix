@@ -457,6 +457,64 @@ Absolute path, staged vs clean, with debug-mode parity against git."
                      (magit-rev-parse "HEAD:subdir/nested.txt")))
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-file-index-stages ()
+  "`magit--file-index-stages' exercises the `ls-files --stage' arm and matches git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-lsfiles-" t))
+        (g "git -c user.email=t@x -c user.name=t"))
+    (unwind-protect
+        (progn
+          (egix-test--shell "cd %s && %s init -q -b main main" root g)
+          (egix-test--shell
+           "cd %s/main && mkdir sub && echo plain > plain.txt && echo nested > sub/nested.txt && %s add . && %s commit -qm first"
+           root g g)
+          ;; A path conflicted on both sides, so it carries several stages.
+          (egix-test--shell
+           "cd %s/main && %s checkout -q -b other && echo theirs > c.txt && %s add c.txt && %s commit -qm theirs"
+           root g g g)
+          (egix-test--shell
+           "cd %s/main && %s checkout -q main && echo ours > c.txt && %s add c.txt && %s commit -qm ours"
+           root g g g)
+          (egix-test--shell "cd %s/main && %s merge other > /dev/null 2>&1; true" root g)
+          (egix-test--shell "cd %s/main && echo untracked > untracked.txt" root)
+          (let* ((repo (file-name-as-directory (expand-file-name "main" root)))
+                 (magix-debug-mode t)
+                 (magit--refresh-cache nil)
+                 (magix-record-stats t)
+                 (magix--stats (make-hash-table :test 'equal))
+                 (default-directory repo))
+            (magix-test--clear-debug-buffer)
+            (should (equal (magit-blob-oid "{index}" "plain.txt")
+                           (magit-rev-parse "HEAD:plain.txt")))
+            (should (equal (magit-blob-oid "{index}" (expand-file-name "plain.txt" repo))
+                           (magit-rev-parse "HEAD:plain.txt")))
+            ;; git prints the path relative to `default-directory', so reading a
+            ;; nested file from its own subdirectory is the case that catches a
+            ;; worktree-relative path leaking into the output.
+            (let ((default-directory (expand-file-name "sub" repo)))
+              (should (equal (magit-blob-oid "{index}" "nested.txt")
+                             (magit-rev-parse "HEAD:sub/nested.txt"))))
+            ;; An untracked path is empty output and exit 0, so no stages.
+            (should-not (magit--file-index-stages "untracked.txt"))
+            (should-not (magit--file-index-stages "no-such-file.txt"))
+            ;; A conflicted path reports one entry per stage.
+            (should (length> (magit--file-index-stages "c.txt") 1))
+            (magix-test--assert-no-mismatch)
+            (let ((cell (gethash "ls-files --stage -- <arg>" magix--stats)))
+              (should cell)
+              (should (= (aref cell 1) (aref cell 0)))))
+          ;; A directory pathspec expands to every entry beneath it, which the
+          ;; arm hands to git rather than reporting the path as untracked.
+          (let* ((default-directory (file-name-as-directory
+                                     (expand-file-name "main" root)))
+                 (magix-debug-mode t)
+                 (magit--refresh-cache nil)
+                 (stages (magit--file-index-stages "sub")))
+            (should (equal (length stages) 1))
+            (should (equal (car (last (car stages))) "0\tsub/nested.txt"))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-magit-rev-format ()
   "`magit-rev-format' / `magit-rev-insert-format' exercise the `log --no-walk
 --format=...' arm."

@@ -250,12 +250,17 @@ fn index_differs_from_head(repo: &gix::Repository, file: String) -> Result<bool>
         None => None,
         Some(entry) => {
             if entry.stage_raw() != 0 {
-                return Err(emacs::Error::msg("egix-index-differs-from-head: unmerged entry"));
+                return Err(emacs::Error::msg(
+                    "egix-index-differs-from-head: unmerged entry",
+                ));
             }
             if entry.mode.is_submodule() {
                 return Err(emacs::Error::msg("egix-index-differs-from-head: submodule"));
             }
-            if entry.flags.contains(gix::index::entry::Flags::INTENT_TO_ADD) {
+            if entry
+                .flags
+                .contains(gix::index::entry::Flags::INTENT_TO_ADD)
+            {
                 None
             } else {
                 let mode = entry.mode.to_tree_entry_mode().ok_or_else(|| {
@@ -283,6 +288,55 @@ fn index_differs_from_head(repo: &gix::Repository, file: String) -> Result<bool>
     };
     // Staged iff the index and HEAD entries are not identical (oid + mode).
     Ok(staged != head)
+}
+
+/// The `MODE OID STAGE` fields of every index entry at PATH, one string per
+/// stage in ascending stage order (git `ls-files --stage`, without its path
+/// field). PATH is repo-relative; an empty list means no entry matches, which
+/// git reports as empty output and exit 0. Signals (caller falls back to git)
+/// when PATH names a directory, since git expands that to every entry beneath
+/// it, and for a missing index.
+#[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
+fn index_stages(repo: &gix::Repository, path: String) -> Result<List<String>> {
+    if path.ends_with('/') {
+        return Err(emacs::Error::msg("egix-index-stages: directory pathspec"));
+    }
+    let index = repo
+        .index()
+        .map_err(|_| emacs::Error::msg("egix-index-stages: no index"))?;
+    let range = match index.entry_range(gix::bstr::BStr::new(path.as_bytes())) {
+        Some(range) => range,
+        None => {
+            // git matches a directory pathspec against everything under it, so
+            // hand those over rather than reporting the path as untracked.
+            let prefix = format!("{path}/");
+            if index
+                .prefixed_entries(gix::bstr::BStr::new(prefix.as_bytes()))
+                .is_some_and(|entries| !entries.is_empty())
+            {
+                return Err(emacs::Error::msg("egix-index-stages: directory pathspec"));
+            }
+            return Ok(List(Vec::new()));
+        }
+    };
+    let stages = index.entries()[range]
+        .iter()
+        .map(|entry| {
+            if entry.mode.is_sparse() {
+                return Err(emacs::Error::msg(
+                    "egix-index-stages: sparse directory entry",
+                ));
+            }
+            Ok(format!(
+                "{:06o} {} {}",
+                entry.mode.bits(),
+                entry.id,
+                entry.stage_raw()
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(List(stages))
 }
 
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
@@ -382,7 +436,12 @@ fn commit_format(repo: &gix::Repository, spec: String, format: String) -> Result
     let Ok(commit) = repo.find_commit(id.detach()) else {
         return Ok(None);
     };
-    Ok(Some(expand_commit_format(&commit, format.as_str(), None, None)?))
+    Ok(Some(expand_commit_format(
+        &commit,
+        format.as_str(),
+        None,
+        None,
+    )?))
 }
 
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]

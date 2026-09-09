@@ -25,6 +25,10 @@
 ;; so arm bugs (wrong egix arg count, etc.) surface as test failures.
 (setq magix-strict-dispatch t)
 
+;; A bare batch Emacs decodes git's output with the system codepage, so
+;; non-ASCII content mismatches even where egix is correct.
+(prefer-coding-system 'utf-8)
+
 ;; (unless (featurep 'magit)
 ;;   ;; Setup package archives and install magit if needed
 ;;   (require 'package)
@@ -270,6 +274,33 @@ including decorations (%D) and the mailmap author (%aN)."
                    (when (and (string-prefix-p "log " sig)
                               (string-search "--decorate=full" sig)
                               (string-search "--use-mailmap" sig))
+                     (setq cell c)))
+                 magix--stats)
+        (should cell)
+        (should (> (aref cell 0) 0))
+        (should (= (aref cell 1) (aref cell 0)))))))
+
+(ert-deftest magix-test-magit-log-at-rev ()
+  "The log buffer's decorated walk at an explicit rev is intercepted and matches git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (egix-test--with-fresh-test-repo
+    ;; Refs so %D has content at the tip.
+    (egix-test--shell "git tag v1")
+    (egix-test--shell "git branch feature")
+    (let ((magix-debug-mode t)
+          (magit--refresh-cache nil)
+          (magix-record-stats t)
+          (magix--stats (make-hash-table :test 'equal)))
+      (magix-test--clear-debug-buffer)
+      (magit-log-setup-buffer '("HEAD") '("--decorate" "-n256") nil)
+      (magix-test--assert-no-mismatch)
+      ;; The rev-carrying shape, which ends with the rev before the `--'.
+      (let (cell)
+        (maphash (lambda (sig c)
+                   (when (and (string-prefix-p "log " sig)
+                              (string-search "--decorate=full" sig)
+                              (string-search "--no-prefix <arg> --" sig))
                      (setq cell c)))
                  magix--stats)
         (should cell)

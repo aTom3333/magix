@@ -363,6 +363,15 @@ DEFAULT, when non-nil, is the string returned if KEY is unset (mirrors
         (default (concat default "\n"))
         (t nil))))))
 
+(defun magix--log-decorated (format-arg count-arg rev)
+  "Dispatch result for `magit-insert-log' at REV, or HEAD when REV is nil.
+FORMAT-ARG is the `--format=' token and COUNT-ARG the `-nN' one."
+  (magix--with-repo
+    (magix--found
+     (egix-log repo rev
+               (string-to-number (substring count-arg (length "-n")))
+               (substring format-arg (length "--format="))))))
+
 (defun magix--git-output-dispatch (args)
   "Return the git result for ARGS using egix, or nil to fall back to git.
 A non-nil result is a cons (EXIT . OUTPUT): the exit code git would return and
@@ -449,11 +458,13 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
              "--decorate=full"
              ,(and n (guard (string-prefix-p "-n" n)))
              "--use-mailmap" "--no-prefix" "--")
-     (magix--with-repo
-       (magix--found
-        (egix-log repo nil
-                  (string-to-number (substring n (length "-n")))
-                  (substring fmt (length "--format="))))))
+     (magix--log-decorated fmt n nil))
+    (`("log" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
+             "--decorate=full"
+             ,(and n (guard (string-prefix-p "-n" n)))
+             "--use-mailmap" "--no-prefix"
+             ,(and rev (pred magix--not-option-p)) "--")
+     (magix--log-decorated fmt n rev))
     (`("remote")
      (magix--with-repo
        (magix--found (magix--format-remote-names (egix-remote-names repo)))))

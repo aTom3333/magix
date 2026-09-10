@@ -401,9 +401,11 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
   (pcase args
     (`("rev-parse" "--show-toplevel")
      (magix--with-repo
-       (if (magix--cwd-inside-gitdir-p repo)
-           ;; Inside the gitdir (e.g. editing COMMIT_EDITMSG) git refuses:
-           ;; "must be run in a work tree" — exit 128, nothing on stdout.
+       ;; Inside the gitdir git has no worktree to report and refuses.
+       ;; A submodule's gitdir is the exception: core.worktree names one
+       ;; there, and git prints it.
+       (if (and (magix--cwd-inside-gitdir-p repo)
+                (not (egix-config-get repo "core.worktree" nil)))
            (magix-exit 128)
          (magix--found (magix--line (magix--normalize-path (egix-repo-workdir repo)))))))
     (`("rev-parse" "--git-dir")

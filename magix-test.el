@@ -672,6 +672,50 @@ subdirectory."
           (magix-test--assert-no-mismatch))
       (delete-directory root t))))
 
+(ert-deftest magix-test-git-common-dir ()
+  "The `rev-parse --git-common-dir' arm matches git across every gitdir layout."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let* ((root (make-temp-file "magix-commondir-" t))
+         (scenarios (egix-test--build-gitdir-scenarios root)))
+    (unwind-protect
+        (progn
+          ;; A deeper subdir and a bare repo, which the shared layouts omit.
+          (make-directory (expand-file-name "normal/deep/x/y" root) t)
+          (make-directory (expand-file-name "bare-sub/refs" root) t)
+          (egix-test--shell "cd %s/bare-sub && git init -q --bare" root)
+          (let ((magix-debug-mode t)
+                (magix-record-stats t)
+                (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            (dolist (cwd (append
+                          (mapcar #'cdr scenarios)
+                          (list (expand-file-name "normal/deep/x/y" root)
+                                (expand-file-name "normal/.git" root)
+                                (expand-file-name "normal/.git/refs" root)
+                                (expand-file-name "normal/.git/worktrees/wt-foo" root)
+                                (expand-file-name "bare-sub" root)
+                                (expand-file-name "bare-sub/refs" root))))
+              (let ((default-directory (file-name-as-directory cwd))
+                    (magit--refresh-cache nil))
+                (magit-git-string "rev-parse" "--git-common-dir")))
+            (magix-test--assert-no-mismatch)
+            ;; The relative forms are the ones that distinguish this from
+            ;; --git-dir, so check a couple of values outright.
+            (let ((magit--refresh-cache nil))
+              (let ((default-directory (file-name-as-directory
+                                        (expand-file-name "normal" root))))
+                (should (equal (magit-git-string "rev-parse" "--git-common-dir")
+                               ".git")))
+              (let ((default-directory (file-name-as-directory
+                                        (expand-file-name "normal/deep/x/y" root))))
+                (should (equal (magit-git-string "rev-parse" "--git-common-dir")
+                               "../../../.git"))))
+            (let ((cell (gethash "rev-parse --git-common-dir" magix--stats)))
+              (should cell)
+              (should (= (aref cell 1) (aref cell 0))))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-magit-inside-gitdir ()
   "From inside the gitdir (commit/rebase editing context) the discovery
 commands are intercepted and match git: --show-toplevel errors (exit 128),

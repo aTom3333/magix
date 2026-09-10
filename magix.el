@@ -236,6 +236,28 @@ DIRECTORY so cache hits avoid the `file-truename' I/O. Outside a refresh
       ".git")
      (t (magix--normalize-path gitdir)))))
 
+(defun magix--rev-parse-git-common-dir (repo)
+  "Return what `git rev-parse --git-common-dir' would print for REPO."
+  (let* ((common (magix--normalize-path (egix-repo-common-dir repo)))
+         (workdir (ignore-errors (egix-repo-workdir repo)))
+         (dotgit (and workdir (expand-file-name ".git" workdir))))
+    (cond
+     ;; From the common dir itself git prints "."; this covers the main gitdir
+     ;; and the root of a bare repo.
+     ((file-equal-p default-directory common) ".")
+     ;; Anywhere else under a gitdir, including a linked worktree's control
+     ;; dir, git prints the absolute path.
+     ((magix--cwd-inside-gitdir-p repo) common)
+     ;; A plain .git directory in an ancestor stays relative to cwd, which is
+     ;; where --git-common-dir parts company with --git-dir.
+     ((and dotgit
+           (equal common (magix--normalize-path dotgit))
+           ;; file-attributes returns t in the first slot only for plain dirs;
+           ;; a gitfile is a regular file, so those keep the absolute form.
+           (eq (car (file-attributes dotgit)) t))
+      (file-relative-name common (magix--normalize-path default-directory)))
+     (t common))))
+
 (defmacro magix--with-repo (&rest body)
   "Run BODY with REPO bound to the discovered repository.
 
@@ -393,6 +415,9 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
                                (file-truename (egix-repo-gitdir repo)))
              (magix-output ".\n"))
          (magix--found (magix--line (magix--rev-parse-git-dir repo))))))
+    (`("rev-parse" "--git-common-dir")
+     (magix--with-repo
+       (magix--found (magix--line (magix--rev-parse-git-common-dir repo)))))
     (`("rev-parse" "--is-bare-repository")
      (magix--with-repo
        (magix-output (if (egix-repo-is-bare repo) "true\n" "false\n"))))

@@ -117,6 +117,14 @@ fn repo_gitdir(repo: &gix::Repository) -> Result<String> {
     Ok(repo.git_dir().to_string_lossy().to_string())
 }
 
+/// Get the common git dir from a Repository handle. For a linked worktree this
+/// is the main repository's gitdir rather than the worktree's control dir.
+#[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
+fn repo_common_dir(repo: &gix::Repository) -> Result<String> {
+    Ok(repo.common_dir().to_string_lossy().to_string())
+}
+
 /// Equivalent to `git rev-parse --is-bare-repository`: the `core.bare` value
 /// when set, otherwise inferred from whether the repository has a worktree.
 #[defun]

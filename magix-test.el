@@ -55,6 +55,86 @@
         (message "Magix debug buffer:\n%s" content)
         (ert-fail "Mismatch detected; see *magix-debug* output above.")))))
 
+(defconst magix-test--git "git -c user.email=t@x -c user.name=t"
+  "Git invocation with an identity, for building fixtures.")
+
+(defun magix-test--commit-on-day (name day)
+  "Commit a file named after NAME, dated DAY of 2026-02, in `default-directory'.
+Both dates are pinned so a fixture's commit order is reproducible."
+  (let* ((date (format "2026-02-%s 10:00:00 +0000" day))
+         (process-environment (cons (concat "GIT_COMMITTER_DATE=" date)
+                                    process-environment)))
+    (egix-test--shell
+     "echo %s > %s.txt && %s add %s.txt && %s commit -q --date=\"%s\" -m %s"
+     name name magix-test--git name magix-test--git date name)))
+
+(defun magix-test--merge-on-day (name day &rest refs)
+  "Merge REFS as a commit named NAME, dated DAY of 2026-02."
+  (let* ((date (format "2026-02-%s 10:00:00 +0000" day))
+         (process-environment (cons (concat "GIT_COMMITTER_DATE=" date)
+                                    process-environment)))
+    (egix-test--shell "%s merge -q --no-ff -m %s %s"
+                      magix-test--git name (string-join refs " "))))
+
+(defun magix-test--build-merge-history (repo)
+  "Populate REPO with the topologies a range walk has to get right.
+Leaves `main' carrying a two-parent merge, `cross-p' and `cross-q' sharing two
+merge bases, `octopus' holding a three-parent merge, and `skew' holding a
+commit whose parent was committed eight days later than it."
+  (let ((default-directory (file-name-as-directory repo)))
+    (egix-test--shell "%s init -q -b main ." magix-test--git)
+    (magix-test--commit-on-day "base1" "01")
+    (magix-test--commit-on-day "base2" "02")
+    (egix-test--shell "%s branch upstream" magix-test--git)
+    ;; A side branch merged back, so the range spans a merge and both its sides.
+    (egix-test--shell "%s checkout -q -b side" magix-test--git)
+    (magix-test--commit-on-day "side1" "03")
+    (magix-test--commit-on-day "side2" "04")
+    (egix-test--shell "%s checkout -q main" magix-test--git)
+    (magix-test--commit-on-day "mine1" "05")
+    (magix-test--merge-on-day "mergeside" "06" "side")
+    (magix-test--commit-on-day "mine2" "07")
+    ;; Each branch merges a commit of the other, leaving two merge bases.
+    (egix-test--shell "%s checkout -q -b cross-p upstream" magix-test--git)
+    (magix-test--commit-on-day "p1" "10")
+    (egix-test--shell "%s checkout -q -b cross-q upstream" magix-test--git)
+    (magix-test--commit-on-day "q1" "11")
+    (egix-test--shell "%s checkout -q cross-p" magix-test--git)
+    (magix-test--merge-on-day "pmergesq" "12" "cross-q")
+    (egix-test--shell "%s checkout -q cross-q" magix-test--git)
+    (magix-test--merge-on-day "qmergesp" "13" "cross-p~1")
+    ;; Three parents at once.
+    (dolist (side '(("oct-a" "a1" "14") ("oct-b" "b1" "15") ("oct-c" "c1" "16")))
+      (egix-test--shell "%s checkout -q -b %s upstream" magix-test--git (nth 0 side))
+      (magix-test--commit-on-day (nth 1 side) (nth 2 side)))
+    (egix-test--shell "%s checkout -q -b octopus upstream" magix-test--git)
+    (magix-test--merge-on-day "octo" "17" "oct-a" "oct-b" "oct-c")
+    ;; A parent dated after its child, so commit-date order and topology differ.
+    (egix-test--shell "%s checkout -q -b skew upstream" magix-test--git)
+    (magix-test--commit-on-day "oldparent" "28")
+    (magix-test--commit-on-day "newchild" "20")
+    (egix-test--shell "%s checkout -q main" magix-test--git)))
+
+(defconst magix-test--log-format
+  (concat "--format=%h" (string 12) "%D" (string 12) (string 12)
+          "%aN" (string 12) "%at" (string 12) (string 12) "%s")
+  "The `--format=' argument `magit--insert-log' builds, as magix sees it.")
+
+(defun magix-test--log-subjects (count rev)
+  "The subject of each commit `magit-insert-log' would show for REV.
+Runs the arg list magit builds, so the dispatcher's log arm is the one under
+test, and returns the %s field of each line."
+  (let ((output
+         (with-temp-buffer
+           (apply #'magit-git-insert
+                  (append (list "log" magix-test--log-format "--decorate=full"
+                                (format "-n%d" count) "--use-mailmap" "--no-prefix")
+                          (and rev (list rev))
+                          (list "--")))
+           (buffer-string))))
+    (mapcar (lambda (line) (car (last (split-string line (string 12)))))
+            (split-string output "\n" t))))
+
 (ert-deftest magix-test-magit-status-with-override ()
   "Test that magit-status works with magix overrides enabled."
   (skip-unless (featurep 'egix-module))
@@ -306,6 +386,105 @@ including decorations (%D) and the mailmap author (%aN)."
         (should cell)
         (should (> (aref cell 0) 0))
         (should (= (aref cell 1) (aref cell 0)))))))
+
+(ert-deftest magix-test-magit-log-range ()
+  "The log buffer over a two-dot range is intercepted and matches git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-logrange-" t))
+        (g "git -c user.email=t@x -c user.name=t"))
+    (unwind-protect
+        (progn
+          (egix-test--shell "cd %s && %s init -q -b main main" root g)
+          (dolist (n '(1 2))
+            (egix-test--shell
+             "cd %s/main && echo %d > base.txt && %s add base.txt && %s commit -qm 'base %d'"
+             root n g g n))
+          (egix-test--shell "cd %s/main && %s branch upstream" root g)
+          (dolist (n '(3 4))
+            (egix-test--shell
+             "cd %s/main && echo %d > mine.txt && %s add mine.txt && %s commit -qm 'mine %d'"
+             root n g g n))
+          (let ((default-directory (file-name-as-directory
+                                    (expand-file-name "main" root)))
+                (magix-debug-mode t)
+                (magit--refresh-cache nil)
+                (magix-record-stats t)
+                (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            (magit-log-setup-buffer '("upstream..main") '("--decorate" "-n256") nil)
+            (magix-test--assert-no-mismatch)
+            ;; The range excludes what upstream already has.
+            (with-current-buffer (magit-get-mode-buffer 'magit-log-mode)
+              (let ((shown (buffer-string)))
+                (should (string-search "mine 4" shown))
+                (should (string-search "mine 3" shown))
+                (should-not (string-search "base 2" shown))))
+            (let (cell)
+              (maphash (lambda (sig c)
+                         (when (and (string-prefix-p "log " sig)
+                                    (string-search "--decorate=full" sig)
+                                    (string-search "--no-prefix <arg> --" sig))
+                           (setq cell c)))
+                       magix--stats)
+              (should cell)
+              (should (= (aref cell 1) (aref cell 0))))))
+      (delete-directory root t))))
+
+(ert-deftest magix-test-magit-log-range-over-merges ()
+  "Range walks match git across merges, two merge bases, and a parent dated
+after its child."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-logmerge-" t)))
+    (unwind-protect
+        (progn
+          (magix-test--build-merge-history root)
+          (let ((default-directory (file-name-as-directory root))
+                (magix-debug-mode t)
+                (magit--refresh-cache nil)
+                (magix-record-stats t)
+                (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            ;; A merge and both of its sides, and the empty reverse.
+            (should (equal (magix-test--log-subjects 256 "upstream..main")
+                           '("mine2" "mergeside" "mine1" "side2" "side1")))
+            (should-not (magix-test--log-subjects 256 "main..upstream"))
+            (should (equal (magix-test--log-subjects 256 "side..main")
+                           '("mine2" "mergeside" "mine1")))
+            ;; With two merge bases, only each side's own merge is exclusive.
+            (should (equal (magix-test--log-subjects 256 "cross-p..cross-q")
+                           '("qmergesp")))
+            (should (equal (magix-test--log-subjects 256 "cross-q..cross-p")
+                           '("pmergesq")))
+            ;; Excluding one of three parents drops only that parent's side.
+            (should (equal (magix-test--log-subjects 256 "upstream..octopus")
+                           '("octo" "c1" "b1" "a1")))
+            (should (equal (magix-test--log-subjects 256 "oct-a..octopus")
+                           '("octo" "c1" "b1")))
+            (should-not (magix-test--log-subjects 256 "octopus..oct-a"))
+            ;; The child comes first even though its parent is dated later, so
+            ;; topology wins over commit-date order.
+            (should (equal (magix-test--log-subjects 256 "upstream..skew")
+                           '("newchild" "oldparent")))
+            ;; A limit must cut the range without disturbing that order.
+            (should (equal (magix-test--log-subjects 2 "upstream..main")
+                           '("mine2" "mergeside")))
+            (should (equal (magix-test--log-subjects 1 "upstream..skew")
+                           '("newchild")))
+            (should (equal (magix-test--log-subjects 2 "upstream..octopus")
+                           '("octo" "c1")))
+            (magix-test--assert-no-mismatch)
+            ;; Every one of those went through egix, not a fall-back to git.
+            (let (cell)
+              (maphash (lambda (sig c)
+                         (when (and (string-prefix-p "log " sig)
+                                    (string-search "--no-prefix <arg> --" sig))
+                           (setq cell c)))
+                       magix--stats)
+              (should cell)
+              (should (= (aref cell 1) (aref cell 0))))))
+      (delete-directory root t))))
 
 (ert-deftest magix-test-magit-abbrev-length ()
   "Test that `magit-abbrev-length' works with the magix --short override.

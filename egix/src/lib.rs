@@ -493,10 +493,20 @@ fn format_needs_mailmap(format: &str) -> bool {
         || format.contains("%cE")
 }
 
+/// One side of a two-dot range, where an empty side stands for HEAD.
+fn range_side(spec: &str) -> &str {
+    if spec.is_empty() {
+        "HEAD"
+    } else {
+        spec
+    }
+}
+
 /// Equivalent to `git log --format=FORMAT [-n LIMIT] [REV]`, with REV defaulting
-/// to HEAD, walking in git's default commit-time order. Each entry is followed
-/// by a newline. Returns nil when REV does not resolve; errors (caller falls
-/// back to git) on a range REV or an unsupported format placeholder.
+/// to HEAD, walking in git's default commit-time order. REV may be a two-dot
+/// range. Each entry is followed by a newline. Returns nil when a plain REV does
+/// not resolve; errors (caller falls back to git) on a symmetric `A...B` range
+/// or an unsupported format placeholder.
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn log(
@@ -507,11 +517,22 @@ fn log(
 ) -> Result<Option<String>> {
     let spec = rev.as_deref().unwrap_or("HEAD");
     reject_reflog_revspec("egix-log", spec)?;
-    if spec.contains("..") {
-        return Err(emacs::Error::msg("egix-log: range revspec unsupported"));
+    // `A...B` is the symmetric difference, which lists both sides.
+    if spec.contains("...") {
+        return Err(emacs::Error::msg("egix-log: symmetric range unsupported"));
     }
-    let Ok(tip) = repo.rev_parse_single(spec) else {
-        return Ok(None);
+    // `A..B` lists what B reaches and A does not; an omitted side means HEAD.
+    let (tip, hidden) = match spec.split_once("..") {
+        Some((excluded, included)) => (
+            peel_to_commit_id("egix-log", repo, range_side(included))?,
+            Some(peel_to_commit_id("egix-log", repo, range_side(excluded))?),
+        ),
+        None => {
+            let Ok(id) = repo.rev_parse_single(spec) else {
+                return Ok(None);
+            };
+            (id.detach(), None)
+        }
     };
     let decorations = if format.contains("%D") {
         Some(Decorations::build(repo)?)
@@ -523,8 +544,9 @@ fn log(
     use gix::revision::walk::Sorting;
     use gix::traverse::commit::simple::CommitTimeOrder;
     let walk = repo
-        .rev_walk([tip.detach()])
+        .rev_walk([tip])
         .sorting(Sorting::ByCommitTime(CommitTimeOrder::NewestFirst))
+        .with_hidden(hidden)
         .all()?;
 
     let mut output = String::new();

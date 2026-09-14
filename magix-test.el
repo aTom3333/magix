@@ -621,6 +621,61 @@ Covers an ASCII and a non-ASCII UTF-8 blob, with debug-mode parity against git."
         (should (equal (buffer-string) "caf\N{U+00E9}\n")))
       (magix-test--assert-no-mismatch))))
 
+(ert-deftest magix-test-magit-anything-unmerged-p ()
+  "`magit-anything-unmerged-p' exercises the `ls-files --unmerged' arms and
+matches git, including git's scoping of a pathless listing to the directory it
+runs from."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-unmerged-" t))
+        (g magix-test--git))
+    (unwind-protect
+        (progn
+          (egix-test--shell "cd %s && %s init -q -b main main" root g)
+          ;; sub/nested.txt stays untouched, so only the root has a conflict.
+          (egix-test--shell
+           "cd %s/main && mkdir sub && echo base > both.txt && echo base > sub/nested.txt && echo clean > clean.txt && %s add . && %s commit -qm base"
+           root g g)
+          (egix-test--shell
+           "cd %s/main && %s checkout -q -b other && echo theirs > both.txt && echo theirs > added.txt && %s add . && %s commit -qm theirs"
+           root g g g)
+          (egix-test--shell
+           "cd %s/main && %s checkout -q main && echo ours > both.txt && echo ours > added.txt && %s add . && %s commit -qm ours"
+           root g g g)
+          ;; The merge is expected to conflict.
+          (egix-test--shell "cd %s/main && %s merge other > /dev/null 2>&1; true" root g)
+          (let* ((repo (file-name-as-directory (expand-file-name "main" root)))
+                 (default-directory repo)
+                 (magix-debug-mode t)
+                 (magit--refresh-cache nil)
+                 (magix-record-stats t)
+                 (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            (should (magit-anything-unmerged-p))
+            (should (magit-anything-unmerged-p "both.txt"))
+            (should (magit-anything-unmerged-p (expand-file-name "both.txt" repo)))
+            ;; An add/add conflict carries stages 2 and 3 but no base.
+            (should (equal (length (magit-git-lines "ls-files" "--unmerged" "added.txt"))
+                           2))
+            (should-not (magit-anything-unmerged-p "clean.txt"))
+            (should-not (magit-anything-unmerged-p "sub/nested.txt"))
+            ;; Nothing under sub/ conflicts, and a pathless listing there sees
+            ;; only that subtree.
+            (let ((default-directory (expand-file-name "sub" repo)))
+              (should-not (magit-anything-unmerged-p)))
+            (magix-test--assert-no-mismatch)
+            ;; Resolving clears both forms.
+            (egix-test--shell "%s add both.txt added.txt" g)
+            (let ((magit--refresh-cache nil))
+              (should-not (magit-anything-unmerged-p))
+              (should-not (magit-anything-unmerged-p "both.txt")))
+            (magix-test--assert-no-mismatch)
+            (dolist (signature '("ls-files --unmerged" "ls-files --unmerged <arg>"))
+              (let ((cell (gethash signature magix--stats)))
+                (should cell)
+                (should (= (aref cell 1) (aref cell 0)))))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-magit-anything-staged-p ()
   "`magit-anything-staged-p' FILE exercises the `diff --quiet --cached' arm.
 Absolute path, staged vs clean, with debug-mode parity against git."

@@ -369,15 +369,55 @@ fn index_stages(repo: &gix::Repository, path: String) -> Result<List<String>> {
                     "egix-index-stages: sparse directory entry",
                 ));
             }
-            Ok(format!(
-                "{:06o} {} {}",
-                entry.mode.bits(),
-                entry.id,
-                entry.stage_raw()
-            ))
+            Ok(entry_stage_fields(entry))
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(List(stages))
+}
+
+/// The `MODE OID STAGE` fields git prints for an index entry.
+fn entry_stage_fields(entry: &gix::index::Entry) -> String {
+    format!(
+        "{:06o} {} {}",
+        entry.mode.bits(),
+        entry.id,
+        entry.stage_raw()
+    )
+}
+
+/// Whether PATH is PATHSPEC itself or lies under it as a directory. An empty
+/// PATHSPEC matches everything, which is how git treats a listing run from the
+/// worktree root.
+fn path_under(path: &[u8], pathspec: &[u8]) -> bool {
+    pathspec.is_empty()
+        || path == pathspec
+        || path
+            .strip_prefix(pathspec)
+            .is_some_and(|rest| rest.starts_with(b"/"))
+}
+
+/// The `MODE OID STAGE` fields and repo-relative path of every unmerged index
+/// entry under PATHSPEC, in index order (git `ls-files --unmerged`). PATHSPEC is
+/// a repo-relative file or directory, empty for the whole index. Signals (caller
+/// falls back to git) for a missing index or a non-UTF-8 path.
+#[defun]
+#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
+fn index_unmerged(repo: &gix::Repository, pathspec: String) -> Result<List<List<String>>> {
+    let index = repo
+        .index()
+        .map_err(|_| emacs::Error::msg("egix-index-unmerged: no index"))?;
+    index
+        .entries()
+        .iter()
+        .filter(|entry| entry.stage_raw() != 0)
+        .filter(|entry| path_under(entry.path(&index), pathspec.as_bytes()))
+        .map(|entry| {
+            let path = std::str::from_utf8(entry.path(&index))
+                .map_err(|_| emacs::Error::msg("egix-index-unmerged: non-UTF-8 path"))?;
+            Ok(List(vec![entry_stage_fields(entry), path.to_string()]))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(List)
 }
 
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]

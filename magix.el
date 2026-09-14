@@ -212,6 +212,19 @@ DIRECTORY so cache hits avoid the `file-truename' I/O. Outside a refresh
    (expand-file-name path (magix--normalize-path (egix-repo-workdir repo)))
    (magix--normalize-path default-directory)))
 
+(defun magix--format-unmerged (repo entries)
+  "Format `egix-index-unmerged' ENTRIES as git ls-files --unmerged output."
+  (mapconcat (lambda (entry)
+               (concat (nth 0 entry) "\t"
+                       (magix--cwd-relative-name repo (nth 1 entry)) "\n"))
+             entries ""))
+
+(defun magix--unmerged-listing (repo pathspec)
+  "Dispatch result listing REPO's unmerged index entries under PATHSPEC.
+An empty listing is git's empty output and exit 0, not a lookup failure."
+  (magix-output
+   (magix--format-unmerged repo (egix-index-unmerged repo pathspec))))
+
 (defun magix--not-option-p (s)
   "Check that s is a string that doesn't start with a -"
   (and (stringp s)
@@ -466,6 +479,16 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
            (magix-output
             (mapconcat (lambda (fields) (concat fields "\t" printed "\n"))
                        (egix-index-stages repo path) ""))))))
+    ;; `magit-anything-unmerged-p': one line per conflict stage. Without a path
+    ;; git scopes the listing to the directory it runs from.
+    (`("ls-files" "--unmerged")
+     (magix--with-repo
+       (when-let ((prefix (magix--worktree-relative-name repo default-directory)))
+         (magix--unmerged-listing repo (if (equal prefix ".") "" prefix)))))
+    (`("ls-files" "--unmerged" ,(and file (pred magix--not-option-p)))
+     (magix--with-repo
+       (when-let ((path (magix--worktree-relative-name repo file)))
+         (magix--unmerged-listing repo path))))
     ;; `magit-anything-staged-p' FILE: exit 1 if the index differs from HEAD.
     (`("diff" "--quiet" "--cached" "--submodule=short" "--"
               ,(and file (pred magix--not-option-p)))

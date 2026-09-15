@@ -486,6 +486,39 @@ after its child."
               (should (= (aref cell 1) (aref cell 0))))))
       (delete-directory root t))))
 
+(ert-deftest magix-test-sequence-log ()
+  "`magit-sequence-insert-sequence's log over a range is intercepted, and the
+unbounded and ambiguous shapes are left to git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-seqlog-" t)))
+    (unwind-protect
+        (progn
+          (magix-test--build-merge-history root)
+          (let ((default-directory (file-name-as-directory root))
+                (magix-debug-mode t)
+                (magit--refresh-cache nil)
+                (magix-record-stats t)
+                (magix--stats (make-hash-table :test 'equal)))
+            (magix-test--clear-debug-buffer)
+            (let ((done (mapcar (lambda (line) (split-string line "\0"))
+                                (magit-git-lines "log" "--format=%H%x00%h%x00%s"
+                                                 "upstream..main"))))
+              (should (equal (mapcar (lambda (entry) (nth 2 entry)) done)
+                             '("mine2" "mergeside" "mine1" "side2" "side1")))
+              ;; Each line is the full hash, its abbreviation and the subject.
+              (should (equal (length (nth 0 (car done))) 40))
+              (should (string-prefix-p (nth 1 (car done)) (nth 0 (car done)))))
+            (should-not (magit-git-lines "log" "--format=%H%x00%h%x00%s" "main..main"))
+            (magix-test--assert-no-mismatch)
+            (let ((cell (gethash "log --format=%H%x00%h%x00%s <arg>" magix--stats)))
+              (should cell)
+              (should (= (aref cell 1) (aref cell 0))))
+            ;; A whole history has no limit to bound it, so it stays with git.
+            (should-not (magix--git-output-dispatch
+                         '("log" "--format=%H%x00%h%x00%s" "HEAD")))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-magit-abbrev-length ()
   "Test that `magit-abbrev-length' works with the magix --short override.
 `magit-abbrev-length' runs `rev-parse --short' against HEAD and HEAD~,

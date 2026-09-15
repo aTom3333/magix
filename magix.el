@@ -515,6 +515,17 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
              "--use-mailmap" "--no-prefix"
              ,(and rev (pred magix--not-option-p)) "--")
      (magix--log-decorated fmt n rev))
+    ;; `magit-sequence-insert-sequence': the commits a rebase is replaying, as
+    ;; `<onto>..HEAD' and with no limit. We take only a range, which bounds the
+    ;; walk; a whole history is faster through git. Without a `--' separator git
+    ;; also refuses a name that is both a revision and a file, and a range is
+    ;; not plausibly a filename.
+    (`("log" ,(and fmt (guard (string-prefix-p "--format=" fmt)))
+             ,(and range (pred magix--not-option-p)
+                         (guard (string-search ".." range))))
+     (magix--with-repo
+       (magix--found
+        (egix-log repo range nil (substring fmt (length "--format="))))))
     ;; `magit-rev-ancestor-p': exit 0 when ANCESTOR is reachable from DESCENDANT.
     (`("merge-base" "--is-ancestor" ,(and ancestor (pred magix--not-option-p))
                                    ,(and descendant (pred magix--not-option-p)))

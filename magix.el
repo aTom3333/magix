@@ -18,6 +18,7 @@
 
 (require 'cl-lib)
 (require 'magit)
+(require 'vc-git)
 
 (defgroup magix nil
   "Gitoxide-powered Magit acceleration."
@@ -212,19 +213,6 @@ DIRECTORY so cache hits avoid the `file-truename' I/O. Outside a refresh
    (expand-file-name path (magix--normalize-path (egix-repo-workdir repo)))
    (magix--normalize-path default-directory)))
 
-(defun magix--format-unmerged (repo entries)
-  "Format `egix-index-unmerged' ENTRIES as git ls-files --unmerged output."
-  (mapconcat (lambda (entry)
-               (concat (nth 0 entry) "\t"
-                       (magix--cwd-relative-name repo (nth 1 entry)) "\n"))
-             entries ""))
-
-(defun magix--unmerged-listing (repo pathspec)
-  "Dispatch result listing REPO's unmerged index entries under PATHSPEC.
-An empty listing is git's empty output and exit 0, not a lookup failure."
-  (magix-output
-   (magix--format-unmerged repo (egix-index-unmerged repo pathspec))))
-
 (defun magix--not-option-p (s)
   "Check that s is a string that doesn't start with a -"
   (and (stringp s)
@@ -313,6 +301,19 @@ Helper for dispatcher arms that produce single-line git output."
   "Git result for a lookup: exit 0 with OUTPUT, or exit 1 when OUTPUT is nil.
 An empty string is a found value (exit 0); nil means not found (exit 1)."
   (if output (magix-output output) (magix-exit 1)))
+
+(defun magix--format-unmerged (repo entries)
+  "Format `egix-index-unmerged' ENTRIES as git ls-files --unmerged output."
+  (mapconcat (lambda (entry)
+               (concat (nth 0 entry) "\t"
+                       (magix--cwd-relative-name repo (nth 1 entry)) "\n"))
+             entries ""))
+
+(defun magix--unmerged-listing (repo pathspec)
+  "Dispatch result listing REPO's unmerged index entries under PATHSPEC.
+An empty listing is git's empty output and exit 0, not a lookup failure."
+  (magix-output
+   (magix--format-unmerged repo (egix-index-unmerged repo pathspec))))
 
 (defun magix--for-each-ref-name-field (arg)
   "Return `short' or `full' for the two for-each-ref formats magix handles.
@@ -567,50 +568,62 @@ Recognises the forms used by magit on the hot path (t or (t ...))."
   (or (eq destination t)
       (and (consp destination) (eq (car destination) t))))
 
-(defun magix-magit-process-git (orig-func destination &rest args)
-  "Intercept `magit-process-git'. Single chokepoint for every git invocation
-in magit (all wrappers funnel through here)."
-  (let* ((flat-args (flatten-tree args))
-         (start (and magix-record-stats (current-time)))
+(defun magix--intercept (label destination args run-git)
+  "Answer ARGS from egix, or call RUN-GIT and return what it returns.
+DESTINATION says where stdout goes: the current buffer for t or (t ...),
+discarded for nil, anything else passes through to git. LABEL names the
+intercepted function in a mismatch report."
+  (let* ((start (and magix-record-stats (current-time)))
          (dispatched (and (magix--should-accelerate-p)
-                          (magix--git-output-dispatch flat-args)))
+                          (magix--git-output-dispatch args)))
          (writes-current (magix--destination-is-current-buffer-p destination))
-         ;; A result is (EXIT . OUTPUT). Intercept when we can honour DESTINATION:
-         ;; the current buffer (insert OUTPUT) or nil (output discarded, as with
-         ;; `magit-git-exit-code'). Other destinations pass through.
+         ;; A result is (EXIT . OUTPUT). Intercept when we can honour
+         ;; DESTINATION: the current buffer (insert OUTPUT) or nil (output
+         ;; discarded, as with `magit-git-exit-code').
          (intercepted (and dispatched (or writes-current (null destination))))
          (debug-orig-duration 0.0)
          (result
           (cond
            ((not intercepted)
-            (apply orig-func destination args))
+            (funcall run-git))
            ;; Debug-mode: run git for real, capture what it inserted, compare.
            (magix-debug-mode
             (let* ((before (point))
                    (magix-exit (car dispatched))
                    (magix-bytes (if writes-current (cdr dispatched) ""))
-                   ;; Time orig-func separately so it can be excluded from
-                   ;; the stats duration — debug-mode comparison cost is not
-                   ;; the operation's real cost.
+                   ;; Time git separately so it can be left out of the stats
+                   ;; duration; the comparison is not the operation's cost.
                    (orig-start (and start (current-time)))
-                   (orig-exit (apply orig-func destination args))
+                   (orig-exit (funcall run-git))
                    (orig-bytes (buffer-substring-no-properties before (point))))
               (when orig-start
                 (setq debug-orig-duration (float-time (time-since orig-start))))
               (unless (and (equal magix-bytes orig-bytes)
                            (eq (zerop magix-exit) (zerop orig-exit)))
-                (magix--log-mismatch 'magit-process-git (list :args flat-args)
-                                      (cons magix-bytes magix-exit)
-                                      (cons orig-bytes orig-exit)))
+                (magix--log-mismatch label (list :args args)
+                                     (cons magix-bytes magix-exit)
+                                     (cons orig-bytes orig-exit)))
               orig-exit))
            (t
             (when writes-current (insert (cdr dispatched)))
             (car dispatched)))))
     (when start
-      (magix--stats-record flat-args (and intercepted t)
-                            (- (float-time (time-since start))
-                               debug-orig-duration)))
+      (magix--stats-record args (and intercepted t)
+                           (- (float-time (time-since start))
+                              debug-orig-duration)))
     result))
+
+(defun magix-magit-process-git (orig-func destination &rest args)
+  "Intercept `magit-process-git'. Single chokepoint for every git invocation
+in magit (all wrappers funnel through here)."
+  (magix--intercept 'magit-process-git destination (flatten-tree args)
+                    (lambda () (apply orig-func destination args))))
+
+(defun magix-vc-git--call (orig-func buffer command &rest args)
+  "Intercept `vc-git--call'. Single chokepoint for vc-git's read-only queries,
+which pass the subcommand apart from its arguments."
+  (magix--intercept 'vc-git--call buffer (cons command (flatten-tree args))
+                    (lambda () (apply orig-func buffer command args))))
 
 
 (defun magix--stats-signature (args)
@@ -810,10 +823,11 @@ interception."
     (display-buffer "*magix-stats*")))
 
 (define-minor-mode magix-mode
-  "Toggle gitoxide-powered Magit acceleration.
+  "Toggle gitoxide-powered Magit and VC acceleration.
 
-When enabled, certain Magit operations will use the faster
-gitoxide implementation instead of calling Git CLI commands."
+When enabled, git queries made by magit and by vc-git are answered from
+the faster gitoxide implementation where magix recognises them, instead of
+calling the Git CLI. Anything it does not recognise still goes to git."
   :global t
   :group 'magix
   :lighter " Magix"
@@ -829,6 +843,10 @@ gitoxide implementation instead of calling Git CLI commands."
         (when (magix--check-function-signature 'magit-process-git '(destination &rest args))
           (advice-add 'magit-process-git :around #'magix-magit-process-git)
           (push 'magit-process-git magix--advised-functions))
+
+        (when (magix--check-function-signature 'vc-git--call '(buffer command &rest args))
+          (advice-add 'vc-git--call :around #'magix-vc-git--call)
+          (push 'vc-git--call magix--advised-functions))
 
         (add-hook 'kill-emacs-hook #'magix--flush-all)
         (magix--stats-start-timer)

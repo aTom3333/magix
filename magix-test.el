@@ -1077,6 +1077,34 @@ a linked-worktree control dir."
                 (should (= (aref cell 1) (aref cell 0)))))))
       (delete-directory root t))))
 
+(ert-deftest magix-test-vc-git-interception ()
+  "vc-git's queries reach the same dispatcher as magit's, and match git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (should (memq 'vc-git--call magix--advised-functions))
+  (should (advice-member-p #'magix-vc-git--call 'vc-git--call))
+  (egix-test--with-fresh-test-repo
+    (let ((magix-debug-mode t)
+          (magix-record-stats t)
+          (magix--stats (make-hash-table :test 'equal))
+          (file (expand-file-name "README.md" egix-test-repo-path)))
+      (magix-test--clear-debug-buffer)
+      (vc-file-clearprops file)
+      ;; The two hot-path queries magix already answers for magit.
+      (should (equal (vc-git-working-revision file)
+                     (magit-rev-parse "HEAD")))
+      (should (equal (vc-git--symbolic-ref file)
+                     (magit-get-current-branch)))
+      ;; A query with no arm still reaches git through the advice.
+      (should (vc-git-registered file))
+      (magix-test--assert-no-mismatch)
+      (dolist (signature '("rev-parse <arg>" "symbolic-ref <arg>"))
+        (let ((cell (gethash signature magix--stats)))
+          (should cell)
+          (should (> (aref cell 1) 0))))
+      ;; The signature is keyed on the git command, not on vc's argument shape.
+      (should-not (gethash "--no-pager" magix--stats)))))
+
 (ert-deftest magix-test-tramp-exclusion ()
   "Test that magix correctly excludes TRAMP paths."
   (skip-unless (featurep 'egix-module))

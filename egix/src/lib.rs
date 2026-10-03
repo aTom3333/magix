@@ -43,6 +43,11 @@ fn init(_env: &Env) -> Result<()> {
     Ok(())
 }
 
+/// Turn any displayable error into one Emacs can signal.
+fn lisp_error(error: impl std::fmt::Display) -> emacs::Error {
+    emacs::Error::msg(error.to_string())
+}
+
 fn resolve_ref<'a>(repo: &'a gix::Repository, name: &str) -> Option<gix::Reference<'a>> {
     repo.find_reference(name).ok()
 }
@@ -165,7 +170,7 @@ fn peel_to_commit_id(function: &str, repo: &gix::Repository, spec: &str) -> Resu
         .map_err(|_| emacs::Error::msg(format!("{function}: unresolved revspec `{spec}`")))?;
     let commit = id
         .object()
-        .map_err(|e| emacs::Error::msg(e.to_string()))?
+        .map_err(lisp_error)?
         .peel_to_commit()
         .map_err(|_| emacs::Error::msg(format!("{function}: `{spec}` is not a commit")))?;
     Ok(commit.id)
@@ -182,13 +187,14 @@ fn is_ancestor(repo: &gix::Repository, ancestor: String, descendant: String) -> 
     let ancestor = peel_to_commit_id("egix-is-ancestor", repo, ancestor.as_str())?;
     let descendant = peel_to_commit_id("egix-is-ancestor", repo, descendant.as_str())?;
     // The best merge-base of the two is the ancestor itself exactly when the
-    // first commit is reachable from the second.
-    match repo.merge_base(ancestor, descendant) {
-        Ok(base) => Ok(base.detach() == ancestor),
-        // No merge-base at all means the histories are unrelated.
-        Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
-        Err(e) => Err(emacs::Error::msg(e.to_string())),
-    }
+    // first commit is reachable from the second. We ask for every base rather
+    // than the best one, because an empty list is how unrelated histories come
+    // back, where `merge_base` reports them as an error we would have to tell
+    // apart from a real failure.
+    let bases = repo
+        .merge_bases_many(ancestor, &[descendant])
+        .map_err(lisp_error)?;
+    Ok(bases.first().is_some_and(|base| base.detach() == ancestor))
 }
 
 /// Equivalent to `git cat-file -t SPEC`: the type of the object SPEC resolves
@@ -255,7 +261,7 @@ fn ls_tree_entry(repo: &gix::Repository, rev: String, file: String) -> Result<St
         .map_err(|_| emacs::Error::msg("egix-ls-tree-entry: not a tree-ish"))?;
     let Some(entry) = tree
         .lookup_entry_by_path(file.as_str())
-        .map_err(|e| emacs::Error::msg(e.to_string()))?
+        .map_err(lisp_error)?
     else {
         return Ok(String::new());
     };
@@ -315,7 +321,7 @@ fn index_differs_from_head(repo: &gix::Repository, file: String) -> Result<bool>
         Err(_) => None, // unborn HEAD: treat as an empty tree
         Ok(tree) => match tree
             .lookup_entry_by_path(file.as_str())
-            .map_err(|e| emacs::Error::msg(e.to_string()))?
+            .map_err(lisp_error)?
         {
             None => None,
             Some(entry) => {
@@ -471,15 +477,15 @@ fn expand_commit_format(
                 output.extend_from_slice(decorations.format(commit.id).as_bytes());
             }
             b's' => {
-                let summary = commit.message()?.summary();
+                let summary = commit.message().map_err(lisp_error)?.summary();
                 output.extend_from_slice(&summary);
             }
-            b'B' => output.extend_from_slice(commit.message_raw()?),
+            b'B' => output.extend_from_slice(commit.message_raw().map_err(lisp_error)?),
             actor @ (b'a' | b'c') => {
                 let signature = if actor == b'a' {
-                    commit.author()?
+                    commit.author().map_err(lisp_error)?
                 } else {
-                    commit.committer()?
+                    commit.committer().map_err(lisp_error)?
                 };
                 match remaining.next().ok_or_else(unsupported)? {
                     b'n' => output.extend_from_slice(signature.name),
@@ -594,10 +600,8 @@ fn log(
         if limit.is_some_and(|limit| n >= limit) {
             break;
         }
-        let info = info.map_err(|e| emacs::Error::msg(e.to_string()))?;
-        let commit = repo
-            .find_commit(info.id)
-            .map_err(|e| emacs::Error::msg(e.to_string()))?;
+        let info = info.map_err(lisp_error)?;
+        let commit = repo.find_commit(info.id).map_err(lisp_error)?;
         output.push_str(&expand_commit_format(
             &commit,
             &format,
@@ -628,10 +632,11 @@ fn revparse_short(
         Some(n) => {
             use gix::odb::store::prefix::disambiguate::Candidate;
             let n = n.min(repo.object_hash().len_in_hex());
-            let candidate = Candidate::new(id.detach(), n)?;
+            let candidate = Candidate::new(id.detach(), n).map_err(lisp_error)?;
             Ok(repo
                 .objects
-                .disambiguate_prefix(candidate)?
+                .disambiguate_prefix(candidate)
+                .map_err(lisp_error)?
                 .map(|p| p.to_string()))
         }
     }
@@ -660,7 +665,7 @@ fn upstream_full_name(repo: &gix::Repository, branch: &str) -> Result<Option<gix
             .remote_tracking_ref_name(gix::remote::Direction::Fetch)
             .transpose()?
     };
-    Ok(upstream_ref.map(|r| r.into_owned()))
+    Ok(upstream_ref)
 }
 
 /// Shared tail for `--abbrev-ref` / `--symbolic-full-name` when SPEC is not a ref. Returns
@@ -844,13 +849,13 @@ fn for_each_ref(repo: &gix::Repository, namespace: String) -> Result<List<List<O
         .map(|reference| {
             reference
                 .map(|r| r.name().as_bstr().to_string())
-                .map_err(|e| emacs::Error::msg(e.to_string()))
+                .map_err(lisp_error)
         })
         .collect::<Result<_>>()?;
 
     let mut references = platform
         .prefixed(prefix.as_str())?
-        .map(|reference| reference.map_err(|e| emacs::Error::msg(e.to_string())))
+        .map(|reference| reference.map_err(lisp_error))
         .collect::<Result<Vec<_>>>()?;
     references.sort_by(|a, b| a.name().as_bstr().cmp(b.name().as_bstr()));
 
@@ -955,14 +960,11 @@ impl Decorations {
         // Capture each ref's own name before peeling: peeling follows symbolic
         // refs (e.g. refs/remotes/*/HEAD) to their target and would otherwise
         // rename them. Peel via the packed-refs peeled column for speed.
-        let packed = repo
-            .refs
-            .cached_packed_buffer()
-            .map_err(|e| emacs::Error::msg(e.to_string()))?;
+        let packed = repo.refs.cached_packed_buffer().map_err(lisp_error)?;
         let packed = packed.as_ref().map(|p| &***p);
         let mut refs: Vec<(String, gix::ObjectId, bool)> = Vec::new();
         for reference in references.all()? {
-            let mut reference = reference.map_err(|e| emacs::Error::msg(e.to_string()))?;
+            let mut reference = reference.map_err(lisp_error)?;
             let name = reference.name().as_bstr().to_string();
             if !Self::is_decoratable(&name) {
                 continue;
@@ -970,7 +972,7 @@ impl Decorations {
             let is_tag = name.starts_with("refs/tags/");
             let oid = reference
                 .peel_to_id_packed(packed)
-                .map_err(|e| emacs::Error::msg(e.to_string()))?
+                .map_err(lisp_error)?
                 .detach();
             refs.push((name, oid, is_tag));
         }
@@ -1122,8 +1124,8 @@ fn config_list(repo: &gix::Repository, scope: Option<String>) -> Result<AList<St
         // and emitted lowercase; subsection names are case-sensitive and kept verbatim.
         let section_name = header.name().to_string().to_ascii_lowercase();
         let subsection = header.subsection_name().map(|s| s.to_string());
-        for (key_name, value) in section.body().clone().into_iter() {
-            let key_lower = key_name.as_ref().to_ascii_lowercase();
+        for (key_name, value) in section.body().into_iter() {
+            let key_lower = key_name.to_ascii_lowercase();
             let dotted = match &subsection {
                 Some(sub) => format!("{}.{}.{}", section_name, sub, key_lower),
                 None => format!("{}.{}", section_name, key_lower),

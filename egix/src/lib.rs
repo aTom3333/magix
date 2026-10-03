@@ -138,25 +138,11 @@ fn repo_is_bare(repo: &gix::Repository) -> Result<bool> {
     Ok(repo.is_bare())
 }
 
-#[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
-fn reject_reflog_revspec(fn_name: &str, spec: &str) -> Result<()> {
-    if spec.contains("@{") {
-        // gix and git can diverge on @{N}/@{-N}/@{push}/etc. — e.g. @{-1} returns a
-        // stale OID when the previous branch is deleted. Defer to git.
-        // TODO re-evaluate if https://github.com/GitoxideLabs/gitoxide/issues/2609 gets fixed
-        return Err(emacs::Error::msg(format!(
-            "{fn_name}: unsupported revspec `{spec}`"
-        )));
-    }
-    Ok(())
-}
-
 /// Resolve SPEC to an object id (as a string). Returns nil if SPEC does not
 /// resolve, so callers can short-circuit instead of consulting git.
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn revparse_single(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
-    reject_reflog_revspec("egix-revparse-single", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
         return Ok(None);
     };
@@ -182,8 +168,6 @@ fn peel_to_commit_id(function: &str, repo: &gix::Repository, spec: &str) -> Resu
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn is_ancestor(repo: &gix::Repository, ancestor: String, descendant: String) -> Result<bool> {
-    reject_reflog_revspec("egix-is-ancestor", ancestor.as_str())?;
-    reject_reflog_revspec("egix-is-ancestor", descendant.as_str())?;
     let ancestor = peel_to_commit_id("egix-is-ancestor", repo, ancestor.as_str())?;
     let descendant = peel_to_commit_id("egix-is-ancestor", repo, descendant.as_str())?;
     // The best merge-base of the two is the ancestor itself exactly when the
@@ -203,7 +187,6 @@ fn is_ancestor(repo: &gix::Repository, ancestor: String, descendant: String) -> 
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn object_type(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
-    reject_reflog_revspec("egix-object-type", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
         return Ok(None);
     };
@@ -226,7 +209,6 @@ fn object_type(repo: &gix::Repository, spec: String) -> Result<Option<String>> {
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn blob_content(repo: &gix::Repository, spec: String) -> Result<String> {
-    reject_reflog_revspec("egix-blob-content", spec.as_str())?;
     let id = repo
         .rev_parse_single(spec.as_str())
         .map_err(|_| emacs::Error::msg("egix-blob-content: unresolved spec"))?;
@@ -250,7 +232,6 @@ fn blob_content(repo: &gix::Repository, spec: String) -> Result<String> {
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn ls_tree_entry(repo: &gix::Repository, rev: String, file: String) -> Result<String> {
-    reject_reflog_revspec("egix-ls-tree-entry", rev.as_str())?;
     let id = repo
         .rev_parse_single(rev.as_str())
         .map_err(|_| emacs::Error::msg("egix-ls-tree-entry: unresolved rev"))?;
@@ -516,7 +497,6 @@ fn expand_commit_format(
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn commit_format(repo: &gix::Repository, spec: String, format: String) -> Result<Option<String>> {
-    reject_reflog_revspec("egix-commit-format", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
         return Ok(None);
     };
@@ -562,7 +542,6 @@ fn log(
     format: String,
 ) -> Result<Option<String>> {
     let spec = rev.as_deref().unwrap_or("HEAD");
-    reject_reflog_revspec("egix-log", spec)?;
     // `A...B` is the symmetric difference, which lists both sides.
     if spec.contains("...") {
         return Err(emacs::Error::msg("egix-log: symmetric range unsupported"));
@@ -623,7 +602,6 @@ fn revparse_short(
     spec: String,
     length: Option<usize>,
 ) -> Result<Option<String>> {
-    reject_reflog_revspec("egix-revparse-short", spec.as_str())?;
     let Ok(id) = repo.rev_parse_single(spec.as_str()) else {
         return Ok(None);
     };

@@ -110,9 +110,7 @@ magix dispatcher falls through to git and wastes a process spawn."
         (should (= (length head) 40))))))
 
 (ert-deftest egix-test-revparse-single-deleted-prev-checkout ()
-  "gix's `rev_parse_single' returns a stale OID for `@{-1}' when the previous
-checkout's branch has been deleted; we must NOT propagate that value (nil or
-error are both fine — both let the dispatcher fall back to git)."
+  "`@{-1}' yields no value when the previous checkout's branch is deleted."
   (egix-test--with-fresh-test-repo
     ;; Build a `@{-1}' that targets a branch we'll then delete.
     (shell-command "git -c user.email=x -c user.name=x checkout -q -b prev-target")

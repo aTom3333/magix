@@ -327,7 +327,7 @@ fn index_differs_from_head(repo: &gix::Repository, file: String) -> Result<bool>
 #[defun]
 #[cfg_attr(feature = "trace", tracing::instrument(skip_all))]
 fn index_stages(repo: &gix::Repository, path: String) -> Result<List<String>> {
-    if path.ends_with('/') {
+    if path.ends_with('/') || path == "." {
         return Err(emacs::Error::msg("egix-index-stages: directory pathspec"));
     }
     let index = repo

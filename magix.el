@@ -480,6 +480,13 @@ the bytes it would write to stdout (its exact format, or \"\" for none)."
            (magix-output
             (mapconcat (lambda (fields) (concat fields "\t" printed "\n"))
                        (egix-index-stages repo path) ""))))))
+    (`("ls-files" "-c" "-z" "--" ,(and file (pred magix--not-option-p)))
+     (magix--with-repo
+       (when-let ((path (magix--worktree-relative-name repo file)))
+         (let ((printed (magix--cwd-relative-name repo path)))
+           (magix-output
+            (mapconcat (lambda (_stage) (concat printed "\0"))
+                       (egix-index-stages repo path) ""))))))
     ;; `magit-anything-unmerged-p': one line per conflict stage. Without a path
     ;; git scopes the listing to the directory it runs from.
     (`("ls-files" "--unmerged")

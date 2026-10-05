@@ -813,6 +813,62 @@ Absolute path, staged vs clean, with debug-mode parity against git."
             (should (equal (car (last (car stages))) "0\tsub/nested.txt"))))
       (delete-directory root t))))
 
+(ert-deftest magix-test-vc-git-registered ()
+  "`vc-git-registered' exercises the `ls-files -c -z' arm and matches git."
+  (skip-unless (featurep 'egix-module))
+  (should magix-mode)
+  (let ((root (make-temp-file "magix-registered-" t))
+        (g "git -c user.email=t@x -c user.name=t"))
+    (unwind-protect
+        (progn
+          (egix-test--shell "cd %s && %s init -q -b main main" root g)
+          (egix-test--shell
+           "cd %s/main && mkdir sub && echo plain > plain.txt && echo nested > sub/nested.txt && %s add . && %s commit -qm first"
+           root g g)
+          ;; A path conflicted on both sides, so it carries several stages.
+          (egix-test--shell
+           "cd %s/main && %s checkout -q -b other && echo theirs > c.txt && %s add c.txt && %s commit -qm theirs"
+           root g g g)
+          (egix-test--shell
+           "cd %s/main && %s checkout -q main && echo ours > c.txt && %s add c.txt && %s commit -qm ours"
+           root g g g)
+          (egix-test--shell "cd %s/main && %s merge other > /dev/null 2>&1; true" root g)
+          (egix-test--shell "cd %s/main && echo untracked > untracked.txt" root)
+          (let* ((repo (file-name-as-directory (expand-file-name "main" root)))
+                 (magix-debug-mode t)
+                 (magix-record-stats t)
+                 (magix--stats (make-hash-table :test 'equal))
+                 (default-directory repo))
+            (magix-test--clear-debug-buffer)
+            (should (vc-git-registered (expand-file-name "plain.txt" repo)))
+            ;; vc runs the query from the worktree root, so a nested file is
+            ;; where a path printed relative to anything else shows up.
+            (should (vc-git-registered (expand-file-name "sub/nested.txt" repo)))
+            ;; A conflicted path is listed once per stage.
+            (should (vc-git-registered (expand-file-name "c.txt" repo)))
+            ;; An untracked or absent path is empty output and exit 0, which vc
+            ;; reads as unregistered.
+            (should-not (vc-git-registered (expand-file-name "untracked.txt" repo)))
+            (should-not (vc-git-registered (expand-file-name "no-such-file.txt" repo)))
+            (magix-test--assert-no-mismatch)
+            (let ((cell (gethash "ls-files -c -z -- <arg>" magix--stats)))
+              (should cell)
+              (should (= (aref cell 1) (aref cell 0)))))
+          ;; The worktree root itself and a directory both list every entry
+          ;; beneath them, which the arm hands to git.
+          (let* ((repo (file-name-as-directory (expand-file-name "main" root)))
+                 (magix-debug-mode t)
+                 (magix-record-stats t)
+                 (magix--stats (make-hash-table :test 'equal))
+                 (default-directory repo))
+            (vc-git-registered (expand-file-name "sub" repo))
+            (vc-git-registered repo)
+            (let ((cell (gethash "ls-files -c -z -- <arg>" magix--stats)))
+              (should cell)
+              (should (= (aref cell 0) 2))
+              (should (= (aref cell 1) 0)))))
+      (delete-directory root t))))
+
 (ert-deftest magix-test-magit-rev-format ()
   "`magit-rev-format' / `magit-rev-insert-format' exercise the `log --no-walk
 --format=...' arm."
@@ -1095,10 +1151,12 @@ a linked-worktree control dir."
                      (magit-rev-parse "HEAD")))
       (should (equal (vc-git--symbolic-ref file)
                      (magit-get-current-branch)))
-      ;; A query with no arm still reaches git through the advice.
       (should (vc-git-registered file))
+      ;; A query with no arm still reaches git through the advice.
+      (should (eq (vc-git-state file) 'up-to-date))
       (magix-test--assert-no-mismatch)
-      (dolist (signature '("rev-parse <arg>" "symbolic-ref <arg>"))
+      (dolist (signature '("rev-parse <arg>" "symbolic-ref <arg>"
+                           "ls-files -c -z -- <arg>"))
         (let ((cell (gethash signature magix--stats)))
           (should cell)
           (should (> (aref cell 1) 0))))
